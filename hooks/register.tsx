@@ -257,7 +257,16 @@ async function trackPlan($: Dollar, e: { tool: string } & Record<string, unknown
   }
 }
 
-export const register: Register = on => {
+type StepRows = 'auto' | 'always' | 'never'
+
+/** Whether the band lists the steps: in `auto`, only a plan file's, since Claude Code draws its own task list. */
+export function showsStepRows(setting: StepRows, unit: 'tasks' | 'steps'): boolean {
+  return setting === 'always' || (setting === 'auto' && unit === 'steps')
+}
+
+export const register: Register = (on, options) => {
+  const stepRows: StepRows = options.stepRows === 'always' || options.stepRows === 'never' ? options.stepRows : 'auto'
+
   on('session.start', async ($, e, next) => {
     // A reload mid-turn: the state survived, the timers did not.
     const current = await read($, live)
@@ -502,7 +511,7 @@ export const register: Register = on => {
       }
 
       const room = Math.max(0, Math.min(MAX_TASK_ROWS, e.props.maxRows - rows.length - 1))
-      if (plan.length > 0 && room > 0) {
+      if (plan.length > 0 && room > 0 && showsStepRows(stepRows, steps.unit)) {
         // Keep the active task in view: start from just before the first unfinished one.
         const firstOpen = Math.max(0, plan.findIndex(task => task.status !== 'completed'))
         const start = Math.max(0, Math.min(firstOpen - 1, plan.length - room))

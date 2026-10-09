@@ -27,7 +27,7 @@ Answer `y` to add the marketplace, then pick a scope. The user scope loads it in
 | | |
 | --- | --- |
 | **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts: tool calls, subagents, files changed, model steps, tokens and errors. Below them, what is running right now. |
-| **When the steps are known** | The bar shows real progress, and the steps are listed with ✓ done, ◐ in progress and ○ to do, scrolled to keep the current one in view. |
+| **When the steps are known** | The bar shows real progress, and the headline names the step in progress. A plan file's steps are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
 | **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists duration, work done, tokens in and out with the cache share, the model, the most-used tools, and totals for the session. |
 | **On your next prompt** | The summary goes away. |
 
@@ -54,6 +54,16 @@ Quick answers and short Q&A never show the band. It appears once a turn has run:
 | 45 s | anything that runs long |
 
 The thresholds are the constants at the top of [`hooks/register.tsx`](hooks/register.tsx).
+
+## Settings
+
+Change it in `/config`, or with `claude plugin configure session-progress`.
+
+| Setting | Values | What it does |
+| --- | --- | --- |
+| `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's checkboxes only, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
+
+To make the band your only task view, hide Claude Code's own list with `ctrl+t` and set `stepRows` to `always`.
 
 ## Good to know
 

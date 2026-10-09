@@ -1,10 +1,30 @@
 {
   "name": "session-progress",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Animated progress band for long-running turns, with a completion summary",
-  "author": { "name": "Oleksandr Voievodin" },
+  "author": {
+    "name": "Oleksandr Voievodin"
+  },
   "repository": "https://github.com/VAlux/claude-session-progress",
   "license": "MIT",
-  "keywords": ["progress", "status", "analytics", "terminal"],
+  "keywords": [
+    "progress",
+    "status",
+    "analytics",
+    "terminal"
+  ],
+  "userConfig": {
+    "stepRows": {
+      "type": "string",
+      "title": "Step rows",
+      "description": "When the band lists the steps under its bar. auto: only for a Markdown plan's checkboxes, since Claude Code already draws its own task list. always: for task lists too. never: not at all.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "always",
+        "never"
+      ]
+    }
+  },
   "types": "./types/index.d.ts"
 }

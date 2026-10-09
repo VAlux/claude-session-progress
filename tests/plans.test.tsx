@@ -63,6 +63,7 @@ test('a Markdown plan with checkboxes drives the bar when there is no task list'
   expect(await shows($, /40%/)).toBe(true)
   expect(await shows($, /plan\.md · 2\/5 steps/)).toBe(true)
   expect(await shows($, /Write the tests/)).toBe(true)
+  expect(await shows($, /Validate/), 'a plan file keeps its step rows by default: Claude Code lists nothing for it').toBe(true)
 
   file.text = plan(3)
   await $.tool.call({ tool: 'Edit', file_path: '/repo/docs/plan.md', old_string: '- [ ] Write the tests', new_string: '- [x] Write the tests' })

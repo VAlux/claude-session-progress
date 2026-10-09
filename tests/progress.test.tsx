@@ -119,3 +119,35 @@ test('the finished bar settles full in the band tree itself, not only in blits',
   expect(track.length).toBeGreaterThan(8)
   expect([...track].every(g => g === '━')).toBe(true)
 })
+
+const todos = [
+  { content: 'Write types', status: 'completed' as const, activeForm: 'Writing types' },
+  { content: 'Write tests', status: 'in_progress' as const, activeForm: 'Writing tests' },
+  { content: 'Validate', status: 'pending' as const, activeForm: 'Validating' },
+]
+
+async function plannedTurn($: Engine, on: On) {
+  engineBottom(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'build it', turnId: 't1' })
+  await $.tool.call({ tool: 'TodoWrite', todos })
+  await clock.advance(10_000)
+}
+
+test('by default a task list is not listed again under the bar: Claude Code draws its own', async ($, on) => {
+  await plannedTurn($, on)
+  expect(await shows($, true, /Writing tests/), 'the headline still names the active task').toBe(true)
+  expect(await shows($, true, /1\/3 tasks/), 'the count stays').toBe(true)
+  expect(await shows($, true, /Validate/), 'no step rows').toBe(false)
+})
+
+test('stepRows: always lists a task list under the bar', { options: { stepRows: 'always' } }, async ($, on) => {
+  await plannedTurn($, on)
+  expect(await shows($, true, /Validate/)).toBe(true)
+})
+
+test('stepRows: never lists nothing, not even a plan file', { options: { stepRows: 'never' } }, async ($, on) => {
+  await plannedTurn($, on)
+  expect(await shows($, true, /Validate/)).toBe(false)
+  expect(await shows($, true, /Writing tests/)).toBe(true)
+})
