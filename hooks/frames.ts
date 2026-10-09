@@ -34,11 +34,27 @@ function encode(words: Uint32Array): string {
   return btoa(s)
 }
 
+export const MUTED = 0x9a9a9a
+
+export type BarOptions = {
+  /** The moving highlight along the filled part; off for a settled bar. */
+  shimmer?: boolean
+  /** Text drawn in the bar's own last cells (a percentage, a clock), so it can never wrap away from it. */
+  label?: string
+  labelColor?: number
+}
+
+export function pctLabel(progress: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, progress)) * 100)}%`.padStart(4)
+}
+
 /**
- * One row of bar cells. `progress` in [0, 1], or null for an indeterminate
- * comet sweeping the track. `t` is milliseconds, driving the shimmer.
+ * One row of bar cells, `width` wide including the label. `progress` in [0, 1],
+ * or null for an indeterminate comet sweeping the track. `t` is milliseconds,
+ * driving the shimmer.
  */
-export function barCells(width: number, progress: number | null, t: number, palette: Palette, shimmer = true): string {
+export function barCells(width: number, progress: number | null, t: number, palette: Palette, options: BarOptions = {}): string {
+  const { shimmer = true, label = '', labelColor = palette.base } = options
   const w = Math.max(1, Math.min(512, Math.floor(width)))
   const words = new Uint32Array(w * 3)
   const put = (i: number, glyph: number, color: number) => {
@@ -46,12 +62,18 @@ export function barCells(width: number, progress: number | null, t: number, pale
     words[i * 3 + 1] = color
     words[i * 3 + 2] = DEFAULT_BG
   }
+  const text = label.length > 0 && label.length + 2 <= w ? label : ''
+  const barW = text.length > 0 ? w - text.length - 1 : w
+  if (text.length > 0) {
+    put(barW, 0x20, labelColor)
+    for (let k = 0; k < text.length; k++) put(barW + 1 + k, text.charCodeAt(k), labelColor)
+  }
 
   if (progress === null) {
-    const tail = Math.max(6, Math.round(w / 5))
+    const tail = Math.max(6, Math.round(barW / 5))
     const period = 2200
-    const head = ((t % period) / period) * (w + tail)
-    for (let i = 0; i < w; i++) {
+    const head = ((t % period) / period) * (barW + tail)
+    for (let i = 0; i < barW; i++) {
       const d = head - i
       if (d >= 0 && d < tail) {
         const k = 1 - d / tail
@@ -63,10 +85,10 @@ export function barCells(width: number, progress: number | null, t: number, pale
     return encode(words)
   }
 
-  const exact = Math.max(0, Math.min(1, progress)) * w
+  const exact = Math.max(0, Math.min(1, progress)) * barW
   const full = Math.floor(exact)
   const shimmerAt = ((t % 2600) / 2600) * (full + 16) - 8
-  for (let i = 0; i < w; i++) {
+  for (let i = 0; i < barW; i++) {
     if (i < full) {
       const gradient = lerp(palette.dim, palette.base, full <= 1 ? 1 : 0.35 + (0.65 * i) / (full - 1))
       const glow = shimmer ? Math.exp(-((i - shimmerAt) ** 2) / 10) : 0

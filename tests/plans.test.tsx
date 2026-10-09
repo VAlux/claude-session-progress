@@ -24,6 +24,15 @@ function bottom(on: On, file: { text: string }) {
   on('tool.call', () => ({ result: 'ok' }) as never)
 }
 
+/** The bar's cells read back as text: its track glyphs and its label. */
+function rasterText(cells: string): string {
+  const bytes = Uint8Array.from(atob(cells), c => c.charCodeAt(0))
+  const words = new Uint32Array(bytes.buffer)
+  let text = ''
+  for (let i = 0; i < words.length; i += 3) text += String.fromCodePoint(words[i] ?? 0x20)
+  return text
+}
+
 async function shows($: Engine, text: RegExp) {
   const ui = await $.ui.mount({
     plugin: PLUGIN,
@@ -32,8 +41,9 @@ async function shows($: Engine, text: RegExp) {
     props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} },
   })
   const found = await ui.find({ text })
+  const bar = await ui.find({ key: 'bar', type: 'Raster' })
   await ui.unmount()
-  return found !== undefined
+  return found !== undefined || (bar !== undefined && text.test(rasterText(String(bar.props.cells))))
 }
 
 test('checkboxes are read outside fences only', () => {

@@ -9,6 +9,8 @@ import {
   WARN,
   activityLabel,
   barCells,
+  MUTED,
+  pctLabel,
   duration,
   glyphCells,
   isMarkdown,
@@ -45,6 +47,8 @@ const FINISH_MS = 1_400
 const SPINNER_KEY = 'spin'
 const BAR_KEY = 'bar'
 const MAX_TASK_ROWS = 5
+// Spare columns after the bar's label: a row that fills the band exactly wraps on some terminals.
+const BAR_SLACK = 2
 
 const PLAN_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate'])
 const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
@@ -71,6 +75,9 @@ type Dollar = EngineInterface
 const scene = {
   requestId: null as string | null,
   barWidth: 0,
+  // What the bar's own label shows between redraws: the live percentage, or a fixed text (the clock).
+  showPct: false,
+  label: '',
   target: null as number | null,
   shown: 0,
   palette: ACCENT,
@@ -173,7 +180,10 @@ function paint($: Dollar) {
   }
   if (scene.requestId === null || scene.barWidth <= 0) return
   const progress = scene.target === null ? null : scene.shown
-  $.ui.blit({ requestId: scene.requestId, key: BAR_KEY, cells: barCells(scene.barWidth, progress, t, scene.palette) }).catch(skipFrame)
+  const label = scene.showPct ? pctLabel(scene.shown) : scene.label
+  const labelColor = scene.showPct ? scene.palette.base : MUTED
+  const cells = barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor })
+  $.ui.blit({ requestId: scene.requestId, key: BAR_KEY, cells }).catch(skipFrame)
   if (!scene.isFinishing) {
     $.ui.blit({ requestId: scene.requestId, key: SPINNER_KEY, cells: spinnerCells(t, scene.palette) }).catch(skipFrame)
   }
@@ -421,11 +431,17 @@ export const register: Register = on => {
 
     if (showLive) {
       const progress = steps.progress
-      scene.target = progress
-      scene.palette = ACCENT
-      const pct = progress === null ? '' : `${Math.round(progress * 100)}%`
-      const tail = progress === null ? duration(now - l.startedAt) : `${pct.padStart(4)}`
-      scene.barWidth = Math.max(8, width - tail.length - 1)
+      // A last live draw can land after the turn ended: it must not repaint the finish orange.
+      if (!scene.isFinishing) {
+        scene.target = progress
+        scene.palette = ACCENT
+      }
+      const label = progress === null ? duration(now - l.startedAt) : pctLabel(progress)
+      if (!scene.isFinishing) {
+        scene.showPct = progress !== null
+        scene.label = label
+      }
+      scene.barWidth = Math.max(12, width - BAR_SLACK)
 
       const current = plan.find(task => task.status === 'in_progress')
       const headline = current?.activeForm ?? current?.subject ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking'
@@ -454,12 +470,17 @@ export const register: Register = on => {
             {duration(now - l.startedAt)}
           </Text>
         </Box>,
-        <Box key="bar-row" flexDirection="row">
-          <Raster key={BAR_KEY} columns={scene.barWidth} rows={1} cells={barCells(scene.barWidth, progress === null ? null : scene.shown, t, ACCENT)} />
-          <Text bold={progress !== null} dimColor={progress === null}>
-            {' '}
-            {tail}
-          </Text>
+        // A fixed width, as the head row has: in a band laid out narrower than bodyColumns the bar would be squeezed and its last cells wrap.
+        <Box key="bar-row" flexDirection="row" width={width} flexShrink={0}>
+          <Raster
+            key={BAR_KEY}
+            columns={scene.barWidth}
+            rows={1}
+            cells={barCells(scene.barWidth, progress === null ? null : scene.shown, t, ACCENT, {
+              label,
+              labelColor: progress === null ? MUTED : ACCENT.base,
+            })}
+          />
         </Box>,
         <Text key="stats" dimColor wrap="truncate-end">
           {stats.join('  ·  ')}
@@ -510,9 +531,12 @@ export const register: Register = on => {
     const mark = sum.reason === 'answer' ? '✓' : sum.reason === 'aborted' ? '■' : '✗'
     const title = sum.reason === 'answer' ? 'Task complete' : sum.reason === 'aborted' ? 'Interrupted' : sum.reason === 'refusal' ? 'Stopped (refusal)' : 'Ended with an error'
     const finalProgress = sum.reason === 'answer' ? 1 : sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null
-    const tail = finalProgress === null ? '' : `${Math.round(finalProgress * 100)}%`.padStart(4)
-    scene.barWidth = Math.max(8, width - tail.length - 1)
+    scene.barWidth = Math.max(12, width - BAR_SLACK)
     const barProgress = scene.isFinishing ? scene.shown : (finalProgress ?? 0)
+    scene.palette = palette
+    scene.showPct = finalProgress !== null
+    scene.label = ''
+    const label = finalProgress === null ? '' : pctLabel(barProgress)
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0
 
     const work = [
@@ -541,12 +565,13 @@ export const register: Register = on => {
             session: {plural(total.turns, 'turn')} · {duration(total.totalMs)}
           </Text>
         </Box>
-        <Box key="bar-row" flexDirection="row">
-          <Raster key={BAR_KEY} columns={scene.barWidth} rows={1} cells={barCells(scene.barWidth, barProgress, t, palette, scene.isFinishing)} />
-          <Text bold color={color}>
-            {' '}
-            {tail}
-          </Text>
+        <Box key="bar-row" flexDirection="row" width={width} flexShrink={0}>
+          <Raster
+            key={BAR_KEY}
+            columns={scene.barWidth}
+            rows={1}
+            cells={barCells(scene.barWidth, barProgress, t, palette, { shimmer: scene.isFinishing, label })}
+          />
         </Box>
         <Text key="work" dimColor wrap="truncate-end">
           {work.join('  ·  ')}

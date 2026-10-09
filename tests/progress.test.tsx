@@ -24,11 +24,21 @@ async function band($: Engine, isWorking: boolean) {
   })
 }
 
+/** The bar's cells read back as text: its track glyphs and its label. */
+function rasterText(cells: string): string {
+  const bytes = Uint8Array.from(atob(cells), c => c.charCodeAt(0))
+  const words = new Uint32Array(bytes.buffer)
+  let text = ''
+  for (let i = 0; i < words.length; i += 3) text += String.fromCodePoint(words[i] ?? 0x20)
+  return text
+}
+
 async function shows($: Engine, isWorking: boolean, text: RegExp) {
   const ui = await band($, isWorking)
   const found = await ui.find({ text })
+  const bar = await ui.find({ key: 'bar', type: 'Raster' })
   await ui.unmount()
-  return found !== undefined
+  return found !== undefined || (bar !== undefined && text.test(rasterText(String(bar.props.cells))))
 }
 
 const done = (turnId: string, durationMs: number) => ({ turnId, durationMs, answer: 'ok', isAborted: false, reason: 'answer' as const })
@@ -39,9 +49,9 @@ test('a short Q/A turn never shows the band', async ($, on) => {
   await $.turn.start({ text: 'what is 2+2?', turnId: 't1' })
   await $.tool.call({ tool: 'Read', file_path: '/tmp/a.ts' })
   await clock.advance(5_000)
-  expect(await shows($, true, /tool call/)).toBe(false)
+  expect(await shows($, true, /tool call/), 'shows /tool call/ (working=true)').toBe(false)
   await $.turn.complete(done('t1', 5_000))
-  expect(await shows($, false, /Task complete/)).toBe(false)
+  expect(await shows($, false, /Task complete/), 'shows /Task complete/ (working=false)').toBe(false)
 })
 
 test('a long planned turn shows progress, then a summary, then hides on the next turn', async ($, on) => {
@@ -60,19 +70,20 @@ test('a long planned turn shows progress, then a summary, then hides on the next
   await $.tool.call({ tool: 'Edit', file_path: '/tmp/a.ts', old_string: 'a', new_string: 'b' })
   await clock.advance(10_000)
 
-  expect(await shows($, true, /Writing tests/)).toBe(true)
-  expect(await shows($, true, /63%/)).toBe(true)
-  expect(await shows($, true, /2\/4 tasks/)).toBe(true)
-  expect(await shows($, true, /1 file changed/)).toBe(true)
+  expect(await shows($, true, /Writing tests/), 'shows /Writing tests/ (working=true)').toBe(true)
+  expect(await shows($, true, /63%/), 'shows /63%/ (working=true)').toBe(true)
+  expect(await shows($, true, /2\/4 tasks/), 'shows /2\/4 tasks/ (working=true)').toBe(true)
+  expect(await shows($, true, /1 file changed/), 'shows /1 file changed/ (working=true)').toBe(true)
 
   await $.turn.complete(done('t1', 95_000))
-  expect(await shows($, false, /Task complete/)).toBe(true)
-  expect(await shows($, false, /100%/)).toBe(true)
-  expect(await shows($, false, /1m 35s/)).toBe(true)
+  await clock.advance(2_000) // the bar and its label fill to 100% as the finish plays
+  expect(await shows($, false, /Task complete/), 'shows /Task complete/ (working=false)').toBe(true)
+  expect(await shows($, false, /100%/), 'shows /100%/ (working=false)').toBe(true)
+  expect(await shows($, false, /1m 35s/), 'shows /1m 35s/ (working=false)').toBe(true)
 
   await $.turn.start({ text: 'thanks', turnId: 't2' })
-  expect(await shows($, true, /Task complete/)).toBe(false)
-  expect(await shows($, true, /tool call/)).toBe(false)
+  expect(await shows($, true, /Task complete/), 'shows /Task complete/ (working=true)').toBe(false)
+  expect(await shows($, true, /tool call/), 'shows /tool call/ (working=true)').toBe(false)
 })
 
 test('a long tool-heavy turn without a plan shows an indeterminate band', async ($, on) => {
@@ -81,18 +92,11 @@ test('a long tool-heavy turn without a plan shows an indeterminate band', async 
   await $.turn.start({ text: 'investigate', turnId: 't1' })
   for (const command of ['ls', 'git status', 'npm test']) await $.tool.call({ tool: 'Bash', command })
   await clock.advance(19_000)
-  expect(await shows($, true, /3 tool calls/)).toBe(false)
+  expect(await shows($, true, /3 tool calls/), 'shows /3 tool calls/ (working=true)').toBe(false)
   await clock.advance(2_000)
-  expect(await shows($, true, /3 tool calls/)).toBe(true)
-  expect(await shows($, true, /\$ npm test/)).toBe(true)
+  expect(await shows($, true, /3 tool calls/), 'shows /3 tool calls/ (working=true)').toBe(true)
+  expect(await shows($, true, /\$ npm test/), 'shows /\$ npm test/ (working=true)').toBe(true)
 })
-
-function glyphs(cells: string): number[] {
-  const bin = atob(cells)
-  const bytes = Uint8Array.from(bin, c => c.charCodeAt(0))
-  const words = new Uint32Array(bytes.buffer)
-  return Array.from(words.filter((_, i) => i % 3 === 0))
-}
 
 test('the finished bar settles full in the band tree itself, not only in blits', async ($, on) => {
   engineBottom(on)
@@ -100,7 +104,7 @@ test('the finished bar settles full in the band tree itself, not only in blits',
   await $.turn.start({ text: 'investigate', turnId: 't1' })
   for (const command of ['ls', 'git status', 'npm test']) await $.tool.call({ tool: 'Bash', command })
   await clock.advance(21_000)
-  expect(await shows($, true, /3 tool calls/)).toBe(true)
+  expect(await shows($, true, /3 tool calls/), 'shows /3 tool calls/ (working=true)').toBe(true)
 
   await $.turn.complete(done('t1', 42_000))
   await clock.advance(2_000) // the finish animation plays out and redraws once
@@ -109,7 +113,9 @@ test('the finished bar settles full in the band tree itself, not only in blits',
   const bar = await ui.find({ key: 'bar', type: 'Raster' })
   await ui.unmount()
   expect(bar).toBeDefined()
-  const cells = glyphs(String(bar?.props.cells))
-  expect(cells.length).toBeGreaterThan(8)
-  expect(cells.every(g => g === 0x2501)).toBe(true)
+  const text = rasterText(String(bar?.props.cells))
+  expect(text.endsWith(' 100%')).toBe(true)
+  const track = text.slice(0, -' 100%'.length)
+  expect(track.length).toBeGreaterThan(8)
+  expect([...track].every(g => g === '━')).toBe(true)
 })
