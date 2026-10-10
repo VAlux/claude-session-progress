@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Live, PlanFile, PlanTask, Summary, Task, TaskStatus, Totals } from '../types'
+import type { AgentRun, Live, PlanFile, PlanTask, Summary, Task, TaskStatus, Totals } from '../types'
 import {
   ACCENT,
   DONE,
@@ -37,6 +37,7 @@ const totals = atom({ plugin: 'session-progress', key: 'totals' } as const, {
   tokensOut: 0,
 })
 const tick = atom({ plugin: 'session-progress', key: 'tick' } as const, 0)
+const agents = atom({ plugin: 'session-progress', key: 'agents' } as const, [])
 
 // When a turn earns the band: a quick answer or a short Q/A never does.
 const SHOW_AFTER_MS = 20_000
@@ -49,6 +50,10 @@ const FINISH_MS = 1_400
 const SPINNER_KEY = 'spin'
 const BAR_KEY = 'bar'
 const MAX_TASK_ROWS = 5
+// A subagent's band draws its own Raster keys, so the main bar's frame loop never paints into it.
+const AGENT_SPINNER_KEY = 'agent-spin'
+const AGENT_BAR_KEY = 'agent-bar'
+const MAX_AGENTS = 30
 // Spare columns after the bar's label: a row that fills the band exactly wraps on some terminals.
 const BAR_SLACK = 2
 
@@ -77,7 +82,7 @@ type Dollar = EngineInterface
 const scene = {
   requestId: null as string | null,
   barWidth: 0,
-  // What the bar's own label shows between redraws: the live percentage, or a fixed text (the clock).
+  // What the bar's own label shows between redraws: the live percentage, or a fixed text (none while nothing is measured).
   showPct: false,
   label: '',
   target: null as number | null,
@@ -109,6 +114,63 @@ function freshLive(turnId: string, startedAt: number): Live {
     tokensOut: 0,
     model: null,
   }
+}
+
+function freshAgent(id: string, startedAt: number): AgentRun {
+  return {
+    id,
+    description: null,
+    type: null,
+    parentId: null,
+    dispatchedByMain: false,
+    startedAt,
+    finishedAt: null,
+    durationMs: null,
+    reason: null,
+    steps: 0,
+    toolCalls: 0,
+    errors: 0,
+    files: [],
+    running: [],
+    lastActivity: null,
+    tokensIn: 0,
+    tokensOut: 0,
+    tasks: [],
+  }
+}
+
+const isRunning = (run: AgentRun) => run.finishedAt === null
+
+/** The subagents a finished main turn still waits on: the ones its own Agent calls started that have not answered. */
+export function waitingOn(runs: readonly AgentRun[]): number {
+  return runs.filter(run => run.dispatchedByMain && isRunning(run)).length
+}
+
+/** Applies `change` to an agent's run, adding the run first if the band has not seen that agent yet. */
+async function updateAgent($: Dollar, id: string, now: number, change: (run: AgentRun) => AgentRun) {
+  await update($, agents, list => {
+    const i = list.findIndex(run => run.id === id)
+    if (i >= 0) return list.map((run, j) => (j === i ? change(run) : run))
+    return [...list, change(freshAgent(id, now))].slice(-MAX_AGENTS)
+  })
+}
+
+const ENDED: Record<string, Summary['reason']> = { completed: 'answer', failed: 'error', killed: 'aborted' }
+
+/** Marks the runs the engine says have ended, for an agent whose own end the band missed. */
+async function reconcileAgents($: Dollar) {
+  let known: { id: string; status: string }[]
+  try {
+    known = await $.agent.list()
+  } catch {
+    return
+  }
+  const ended = new Map(known.filter(a => ENDED[a.status] !== undefined).map(a => [a.id, ENDED[a.status]!]))
+  if (ended.size === 0) return
+  const now = await $.clock.now()
+  await update($, agents, list =>
+    list.map(run => (isRunning(run) && ended.has(run.id) ? { ...run, finishedAt: now, reason: ended.get(run.id)!, running: [] } : run)),
+  )
 }
 
 function planProgress(list: readonly Task[]): number | null {
@@ -268,30 +330,30 @@ function setTaskStatus(list: readonly Task[], id: string, status: TaskStatus | '
   return list.map(t => (t.id === id ? { ...t, status, subject: subject ?? t.subject, activeForm: activeForm ?? t.activeForm } : t))
 }
 
-async function trackPlan($: Dollar, e: { tool: string } & Record<string, unknown>, result: unknown) {
+/** A task list after one TodoWrite, TaskCreate or TaskUpdate call. */
+function applyPlanTool(list: Task[], e: { tool: string } & Record<string, unknown>, result: unknown): Task[] {
   if (e.tool === 'TodoWrite' && Array.isArray(e.todos)) {
     const todos = e.todos as { content: string; status: TaskStatus; activeForm?: string }[]
-    await update($, tasks, () => todos.map((t, i) => ({ id: `todo-${i}`, subject: t.content, activeForm: t.activeForm, status: t.status })))
+    return todos.map((t, i) => ({ id: `todo-${i}`, subject: t.content, activeForm: t.activeForm, status: t.status }))
   } else if (e.tool === 'TaskCreate') {
     const id = (result as { task?: { id?: string } } | undefined)?.task?.id
-    if (typeof id !== 'string') return
+    if (typeof id !== 'string') return list
     const task: Task = {
       id,
       subject: String(e.subject ?? 'Task'),
       activeForm: typeof e.activeForm === 'string' ? e.activeForm : undefined,
       status: 'pending',
     }
-    await update($, tasks, list => [...list.filter(t => t.id !== id), task])
+    return [...list.filter(t => t.id !== id), task]
   } else if (e.tool === 'TaskUpdate' && typeof e.taskId === 'string') {
     const status = (e.status as TaskStatus | 'deleted' | undefined) ?? undefined
     const subject = typeof e.subject === 'string' ? e.subject : undefined
     const activeForm = typeof e.activeForm === 'string' ? e.activeForm : undefined
-    await update($, tasks, list => {
-      const current = list.find(t => t.id === e.taskId)
-      if (current === undefined) return list
-      return setTaskStatus(list, e.taskId as string, status ?? current.status, subject, activeForm)
-    })
+    const current = list.find(t => t.id === e.taskId)
+    if (current === undefined) return list
+    return setTaskStatus(list, e.taskId, status ?? current.status, subject, activeForm)
   }
+  return list
 }
 
 type StepRows = 'auto' | 'always' | 'never'
@@ -307,10 +369,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     // A reload mid-turn: the state survived, the timers did not.
     const current = await read($, live)
-    if (current !== null) {
-      startTicking($)
-      if (current.isLong) startFrames($)
-    }
+    if (current !== null || (await read($, agents)).some(isRunning)) startTicking($)
+    if (current?.isLong) startFrames($)
     return next(e)
   })
 
@@ -339,6 +399,15 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e)
     const usage = result.usage
+    if (e.agentId !== undefined) {
+      const now = await $.clock.now()
+      await updateAgent($, e.agentId, now, run => ({
+        ...run,
+        steps: run.steps + 1,
+        tokensIn: run.tokensIn + (usage ? usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens : 0),
+        tokensOut: run.tokensOut + (usage?.output_tokens ?? 0),
+      }))
+    }
     await update($, live, l => {
       if (l === null) return l
       return {
@@ -354,13 +423,29 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    if ((await read($, live)) === null) return next(e)
+    const agentId = e.agentId
+    const isSub = agentId !== undefined
+    // A background subagent goes on after the main turn ends: its calls still count toward its own run.
+    const isLive = (await read($, live)) !== null
+    if (!isLive && !isSub) return next(e)
 
     const input = e as unknown as { tool: string } & Record<string, unknown>
     const name = shortToolName(e.tool)
     const label = activityLabel(e.tool, input)
-    const isSub = e.agentId !== undefined
     const isAgent = e.tool === 'Agent' || String(e.tool) === 'Task'
+    const now = await $.clock.now()
+
+    if (agentId !== undefined) {
+      await updateAgent($, agentId, now, run => ({
+        ...run,
+        finishedAt: null,
+        reason: null,
+        toolCalls: run.toolCalls + 1,
+        running: [...run.running, { id: e.tool_use_id, label }],
+        lastActivity: label,
+      }))
+      startTicking($)
+    }
 
     await update($, live, l =>
       l === null
@@ -390,7 +475,30 @@ export const register: Register = (on, options) => {
             files: !failed && WRITE_TOOLS.has(e.tool) && path !== null && !l.files.includes(path) ? [...l.files, path].slice(-500) : l.files,
           },
     )
-    if (!failed && tracksPlanTool(e.tool, isSub)) await trackPlan($, input, ran.result)
+    if (agentId !== undefined) {
+      await updateAgent($, agentId, now, run => ({
+        ...run,
+        errors: failed ? run.errors + 1 : run.errors,
+        running: run.running.filter(r => r.id !== e.tool_use_id),
+        files: !failed && WRITE_TOOLS.has(e.tool) && path !== null && !run.files.includes(path) ? [...run.files, path].slice(-200) : run.files,
+        tasks: !failed && PLAN_TOOLS.has(e.tool) ? applyPlanTool(run.tasks, input, ran.result) : run.tasks,
+      }))
+    }
+    if (!failed && isAgent) {
+      const started = (ran.result as { agentId?: unknown; agentType?: unknown } | undefined) ?? {}
+      if (typeof started.agentId === 'string') {
+        await updateAgent($, started.agentId, now, run => ({
+          ...run,
+          description: typeof input.description === 'string' ? input.description : run.description,
+          type: typeof started.agentType === 'string' ? started.agentType : typeof input.subagent_type === 'string' ? input.subagent_type : run.type,
+          parentId: agentId ?? null,
+          dispatchedByMain: !isSub,
+        }))
+      }
+    }
+    if (!isLive) return ran
+
+    if (!failed && tracksPlanTool(e.tool, isSub)) await update($, tasks, list => applyPlanTool(list, input, ran.result))
     if (!failed && e.tool === 'Bash') {
       const reported = bashReported(ran)
       if (reported.length > 0) await update($, planFile, plan => (plan === null ? plan : withCompleted(plan, reported)))
@@ -403,8 +511,15 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // an observer: its failure never blocks the call
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
-    stopTicking()
+    if (e.agentId !== undefined) {
+      const now = await $.clock.now()
+      await updateAgent($, e.agentId, now, run => ({ ...run, finishedAt: now, durationMs: e.durationMs, reason: e.reason, running: [] }))
+      if ((await read($, live)) === null && !(await read($, agents)).some(isRunning)) stopTicking()
+      return next(e)
+    }
+    await reconcileAgents($)
+    const waiting = e.reason === 'answer' ? waitingOn(await read($, agents)) : 0
+    if (waiting === 0) stopTicking()
 
     const l = await read($, live)
     const plan = await readSteps($)
@@ -444,8 +559,9 @@ export const register: Register = (on, options) => {
           model: usage?.model ?? l.model,
         }
         await update($, summary, () => done)
-        scene.palette = e.reason === 'answer' ? DONE : e.reason === 'aborted' ? WARN : FAIL
-        scene.target = e.reason === 'answer' ? 1 : (plan.progress ?? scene.shown)
+        // Handed off to a background subagent, the work is not done: the bar keeps what the plan says.
+        scene.palette = waiting > 0 ? ACCENT : e.reason === 'answer' ? DONE : e.reason === 'aborted' ? WARN : FAIL
+        scene.target = e.reason === 'answer' && waiting === 0 ? 1 : (plan.progress ?? scene.shown)
         scene.finishFrom = scene.shown
         scene.finishFrames = 0
         scene.isFinishing = true
@@ -462,11 +578,123 @@ export const register: Register = (on, options) => {
     // The animated Raster bar is the terminal's alone.
     if (e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
 
+    await read($, tick) // redraw each second for the clock
+    const { Box, Text, Raster } = $.ui.resolve(e)
+    const width = Math.max(20, e.props.bodyColumns)
+
+    /** Up to `room` rows of a step list, keeping the active step in view, then a `+N more` row. */
+    const stepRowsOf = (list: readonly Task[], room: number) => {
+      const out: JSX.Element[] = []
+      if (list.length === 0 || room <= 0) return out
+      // Keep the active task in view: start from just before the first unfinished one.
+      const firstOpen = Math.max(0, list.findIndex(task => task.status !== 'completed'))
+      const start = Math.max(0, Math.min(firstOpen - 1, list.length - room))
+      const visible = list.slice(start, start + room)
+      for (const task of visible) {
+        const isDone = task.status === 'completed'
+        const isActive = task.status === 'in_progress'
+        out.push(
+          <Text key={`task-${task.id}`} wrap="truncate-end" dimColor={!isActive} strikethrough={false}>
+            <Text color={isDone ? 'success' : isActive ? 'claude' : 'inactive'}>{isDone ? '  ✓ ' : isActive ? '  ◐ ' : '  ○ '}</Text>
+            {isActive ? <Text bold>{task.subject}</Text> : task.subject}
+          </Text>,
+        )
+      }
+      const hidden = list.length - visible.length
+      if (hidden > 0) out.push(<Text key="more" dimColor>{`    +${hidden} more`}</Text>)
+      return out
+    }
+
+    // A subagent's transcript in view: its own run, never the main conversation's.
+    const viewed = e.props.view.agentId
+    if (viewed !== undefined) {
+      const run = (await read($, agents)).find(a => a.id === viewed)
+      if (run === undefined) return next(e)
+      const below = await next(e)
+      const maxRows = Math.max(1, e.props.maxRows - (below == null ? 0 : 2))
+      const now = await $.clock.now()
+      const t = Date.now()
+      const isDone = !isRunning(run)
+      const list = run.tasks
+      const progress = isDone && run.reason === 'answer' ? 1 : planProgress(list)
+      const palette = !isDone ? ACCENT : run.reason === 'answer' ? DONE : run.reason === 'aborted' ? WARN : FAIL
+      const color = !isDone ? 'claude' : run.reason === 'answer' ? 'success' : run.reason === 'aborted' ? 'warning' : 'error'
+      const current = list.find(task => task.status === 'in_progress')
+      const headline = isDone
+        ? run.reason === 'answer'
+          ? 'Subagent complete'
+          : run.reason === 'aborted'
+            ? 'Subagent interrupted'
+            : 'Subagent ended with an error'
+        : (current?.activeForm ?? current?.subject ?? run.running[run.running.length - 1]?.label ?? run.lastActivity ?? 'Starting')
+      const elapsed = isDone ? (run.durationMs ?? (run.finishedAt ?? now) - run.startedAt) : now - run.startedAt
+      const doneCount = list.filter(task => task.status === 'completed').length
+      const barWidth = Math.max(12, width - BAR_SLACK)
+      // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
+      const label = progress === null ? '' : pctLabel(progress)
+      const stats = [
+        plural(run.toolCalls, 'tool call'),
+        run.files.length > 0 ? `${plural(run.files.length, 'file')} changed` : null,
+        run.steps > 0 ? plural(run.steps, 'step') : null,
+        run.tokensOut > 0 ? `${tokens(run.tokensIn)}↑ ${tokens(run.tokensOut)}↓` : null,
+        run.errors > 0 ? plural(run.errors, 'error') : null,
+      ].filter(Boolean)
+      const mark = !isDone ? null : run.reason === 'answer' ? '✓' : run.reason === 'aborted' ? '■' : '✗'
+
+      const rows = [
+        <Box key="head-row" flexDirection="row" justifyContent="space-between" width={width}>
+          <Box flexDirection="row" flexShrink={1}>
+            <Raster key={AGENT_SPINNER_KEY} columns={1} rows={1} cells={mark === null ? spinnerCells(t, palette) : glyphCells(mark, palette.base)} />
+            <Text bold color={color} wrap="truncate-end">
+              {' '}
+              {headline}
+            </Text>
+          </Box>
+          <Text dimColor>
+            {run.description ?? run.type ?? 'subagent'} · {list.length > 0 ? `${doneCount}/${list.length} tasks · ` : ''}
+            {duration(elapsed)}
+          </Text>
+        </Box>,
+        <Box key="bar-row" flexDirection="row" width={width} flexShrink={0}>
+          <Raster
+            key={AGENT_BAR_KEY}
+            columns={barWidth}
+            rows={1}
+            cells={barCells(barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor: progress === null ? MUTED : palette.base })}
+          />
+        </Box>,
+        <Text key="stats" dimColor wrap="truncate-end">
+          {stats.join('  ·  ')}
+        </Text>,
+      ]
+      if (!isDone && run.running.length > 1) {
+        rows.push(
+          <Text key="running" dimColor wrap="truncate-end">
+            ↳ {plural(run.running.length, 'call')} running: {run.running.map(r => r.label).join(', ')}
+          </Text>,
+        )
+      } else if (!isDone && current !== undefined && run.lastActivity !== null) {
+        rows.push(
+          <Text key="running" dimColor wrap="truncate-end">
+            ↳ {run.lastActivity}
+          </Text>,
+        )
+      }
+      // Claude Code draws no list for a subagent, so its band lists it unless step rows are off.
+      if (stepRows !== 'never') rows.push(...stepRowsOf(list, Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1))))
+
+      return (
+        <Box flexDirection="column">
+          {below}
+          {rows.slice(0, Math.max(1, maxRows))}
+        </Box>
+      )
+    }
+
     const l = await read($, live)
     const s = await read($, summary)
     const steps = await readSteps($)
     const plan = steps.list
-    await read($, tick) // redraw each second for the clock
 
     const showLive = l !== null && l.isLong
     const showSummary = !showLive && s !== null && !e.props.isWorking
@@ -476,8 +704,6 @@ export const register: Register = (on, options) => {
     const below = await next(e)
     const maxRows = Math.max(1, e.props.maxRows - (below == null ? 0 : 2))
 
-    const { Box, Text, Raster } = $.ui.resolve(e)
-    const width = Math.max(20, e.props.bodyColumns)
     const now = await $.clock.now()
     const t = Date.now()
 
@@ -490,7 +716,8 @@ export const register: Register = (on, options) => {
         scene.target = progress
         scene.palette = ACCENT
       }
-      const label = progress === null ? duration(now - l.startedAt) : pctLabel(progress)
+      // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
+      const label = progress === null ? '' : pctLabel(progress)
       if (!scene.isFinishing) {
         scene.showPct = progress !== null
         scene.label = label
@@ -555,24 +782,8 @@ export const register: Register = (on, options) => {
         )
       }
 
-      const room = Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1))
-      if (plan.length > 0 && room > 0 && showsStepRows(stepRows, steps.source !== null)) {
-        // Keep the active task in view: start from just before the first unfinished one.
-        const firstOpen = Math.max(0, plan.findIndex(task => task.status !== 'completed'))
-        const start = Math.max(0, Math.min(firstOpen - 1, plan.length - room))
-        const visible = plan.slice(start, start + room)
-        for (const task of visible) {
-          const isDone = task.status === 'completed'
-          const isActive = task.status === 'in_progress'
-          rows.push(
-            <Text key={`task-${task.id}`} wrap="truncate-end" dimColor={!isActive} strikethrough={false}>
-              <Text color={isDone ? 'success' : isActive ? 'claude' : 'inactive'}>{isDone ? '  ✓ ' : isActive ? '  ◐ ' : '  ○ '}</Text>
-              {isActive ? <Text bold>{task.subject}</Text> : task.subject}
-            </Text>,
-          )
-        }
-        const hidden = plan.length - visible.length
-        if (hidden > 0) rows.push(<Text key="more" dimColor>{`    +${hidden} more`}</Text>)
+      if (showsStepRows(stepRows, steps.source !== null)) {
+        rows.push(...stepRowsOf(plan, Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1))))
       }
 
       return (
@@ -585,17 +796,29 @@ export const register: Register = (on, options) => {
 
     const sum = s as Summary
     const total = await read($, totals)
-    const palette: Palette = sum.reason === 'answer' ? DONE : sum.reason === 'aborted' ? WARN : FAIL
-    const color = sum.reason === 'answer' ? 'success' : sum.reason === 'aborted' ? 'warning' : 'error'
-    const mark = sum.reason === 'answer' ? '✓' : sum.reason === 'aborted' ? '■' : '✗'
-    const title = sum.reason === 'answer' ? 'Task complete' : sum.reason === 'aborted' ? 'Interrupted' : sum.reason === 'refusal' ? 'Stopped (refusal)' : 'Ended with an error'
-    const finalProgress = sum.reason === 'answer' ? 1 : sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null
+    const waiting = sum.reason === 'answer' ? waitingOn(await read($, agents)) : 0
+    const palette: Palette = waiting > 0 ? ACCENT : sum.reason === 'answer' ? DONE : sum.reason === 'aborted' ? WARN : FAIL
+    const color = waiting > 0 ? 'claude' : sum.reason === 'answer' ? 'success' : sum.reason === 'aborted' ? 'warning' : 'error'
+    const mark = waiting > 0 ? '◐' : sum.reason === 'answer' ? '✓' : sum.reason === 'aborted' ? '■' : '✗'
+    const title =
+      waiting > 0
+        ? `Waiting for ${plural(waiting, 'subagent')}`
+        : sum.reason === 'answer'
+          ? 'Task complete'
+          : sum.reason === 'aborted'
+            ? 'Interrupted'
+            : sum.reason === 'refusal'
+              ? 'Stopped (refusal)'
+              : 'Ended with an error'
+    const planned = sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null
+    const finalProgress = sum.reason === 'answer' && waiting === 0 ? 1 : planned
     scene.barWidth = Math.max(12, width - BAR_SLACK)
-    const barProgress = scene.isFinishing ? scene.shown : (finalProgress ?? 0)
+    // Waiting with no plan to measure, the bar sweeps rather than settle on a number it does not have.
+    const barProgress = waiting > 0 && planned === null ? null : scene.isFinishing ? scene.shown : (finalProgress ?? 0)
     scene.palette = palette
     scene.showPct = finalProgress !== null
     scene.label = ''
-    const label = finalProgress === null ? '' : pctLabel(barProgress)
+    const label = finalProgress === null || barProgress === null ? '' : pctLabel(barProgress)
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0
 
     const work = [
@@ -619,7 +842,7 @@ export const register: Register = (on, options) => {
               {' '}
               {title}
             </Text>
-            <Text dimColor> in {duration(sum.durationMs)}</Text>
+            <Text dimColor>{waiting > 0 ? ` · the turn took ${duration(sum.durationMs)}` : ` in ${duration(sum.durationMs)}`}</Text>
           </Box>
           <Text dimColor>
             session: {plural(total.turns, 'turn')} · {duration(total.totalMs)}

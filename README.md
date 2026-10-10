@@ -28,6 +28,8 @@ Answer `y` to add the marketplace, then pick a scope. The user scope loads it in
 | --- | --- |
 | **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts: tool calls, subagents, files changed, model steps, tokens and errors. Below them, what is running right now. |
 | **When the steps are known** | The bar shows real progress, and the headline names the step in progress. A plan file's steps are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
+| **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*, and its bar stays where the plan is instead of filling. |
+| **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
 | **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists duration, work done, tokens in and out with the cache share, the model, the most-used tools, and totals for the session. |
 | **On your next prompt** | The summary goes away. |
 
@@ -38,9 +40,9 @@ Answer `y` to add the marketplace, then pick a scope. The user scope loads it in
 | A task list (`TodoWrite`, or `TaskCreate` / `TaskUpdate`) | Done ÷ total, with the task in progress counting as half |
 | A Markdown plan with `- [ ]` / `- [x]` boxes that Claude reads or edits | Ticked ÷ total, moving forward as boxes are ticked |
 | A plan with two or more `### Task N:` headings | Done tasks ÷ total. A task is done when all its boxes are ticked, or when a superpowers ledger reports `Task N: complete`, whether in a Bash call's output (`task-done`) or in its `progress.md` that Claude reads. superpowers' executor never ticks a plan's boxes, so without this its plans stayed at 0%. |
-| Neither | A soft streak sweeps the track. There is no honest percentage to show, so it does not invent one. |
+| Neither | A soft streak sweeps the track. There is no honest percentage to show, so it does not invent one, and the bar carries no label: the clock is on the row above. |
 
-A task list wins over a plan file. A plan that is still unfinished carries over to the next turn, and a finished one is cleared. A subagent's own task list never replaces the main one, but a subagent can still mark the main session's tasks done.
+A task list wins over a plan file. A plan that is still unfinished carries over to the next turn, and a finished one is cleared. A subagent's own task list never replaces the main one, but a subagent can still mark the main session's tasks done. Its own list drives its own band instead.
 
 The mod also adds one line to the system prompt, asking Claude to keep a task list when a task has several known steps, so the bar has real steps to follow more often.
 
