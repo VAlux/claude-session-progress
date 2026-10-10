@@ -54,6 +54,32 @@ export type Summary = {
   model: string | null
 }
 
+/**
+ * One subagent's run as the band saw it: what its transcript's band draws.
+ * `dispatchedByMain` marks an agent the main loop's Agent call started, the ones a finished main turn waits for.
+ */
+export type AgentRun = {
+  id: string
+  description: string | null
+  type: string | null
+  parentId: string | null
+  dispatchedByMain: boolean
+  startedAt: number
+  finishedAt: number | null
+  durationMs: number | null
+  reason: Summary['reason'] | null
+  steps: number
+  toolCalls: number
+  errors: number
+  files: string[]
+  running: { id: string; label: string }[]
+  lastActivity: string | null
+  tokensIn: number
+  tokensOut: number
+  /** Its own TodoWrite / TaskCreate list, which never replaces the main one. */
+  tasks: Task[]
+}
+
 export type Totals = { turns: number; longTurns: number; totalMs: number; toolCalls: number; tokensIn: number; tokensOut: number }
 
 declare module 'claude-code' {
@@ -65,6 +91,7 @@ declare module 'claude-code' {
       planFile: PlanFile | null
       totals: Totals
       tick: number
+      agents: AgentRun[]
     }
   }
 }

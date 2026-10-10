@@ -166,3 +166,17 @@ test('the band draws whatever is beneath it above itself, instead of hiding it',
   expect(below).toBeGreaterThanOrEqual(0)
   expect(below).toBeLessThan(stats)
 })
+
+test('an indeterminate bar carries no clock of its own: the head row already shows it', async ($, on) => {
+  engineBottom(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'investigate', turnId: 't1' })
+  for (const command of ['ls', 'git status', 'npm test']) await $.tool.call({ tool: 'Bash', command })
+  await clock.advance(21_000)
+  const ui = await band($, true)
+  const clocks = await ui.findAll({ type: 'Text', text: /21s/ })
+  const bar = await ui.find({ key: 'bar', type: 'Raster' })
+  await ui.unmount()
+  expect(clocks.length, 'the head row shows the clock').toBeGreaterThan(0)
+  expect(rasterText(String(bar?.props.cells)), 'the bar does not repeat it').not.toMatch(/\d+s/)
+})
