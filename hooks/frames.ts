@@ -1,5 +1,7 @@
 // Pure drawing helpers: Raster cells for the bar and spinner, and text formatting.
 
+import type { PlanTask } from '../types'
+
 export type Palette = { base: number; glow: number; dim: number }
 
 export const ACCENT: Palette = { base: 0xd97757, glow: 0xffc9a8, dim: 0x8a4a35 }
@@ -190,10 +192,17 @@ export function shortToolName(tool: string): string {
 }
 
 const CHECKBOX = /^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.+?)\s*$/
+const TASK_HEADING = /^#{2,4}\s+Task\s+(\d+)\s*[:.)—–-]\s*(.+?)\s*#*\s*$/
+// What superpowers' task-done appends to its ledger, and prints prefixed with `ledger: `.
+const LEDGER_DONE = /^(?:ledger:\s*)?Task (\d+): complete\b/gm
+const LEDGER_PLAN = /^# SDD ledger — plan: (.+?)\s*$/m
 
-/** The checkbox items of a Markdown text, outside fenced code blocks. */
-export function parseCheckboxes(text: string): { text: string; done: boolean }[] {
+const plain = (text: string) => text.replace(/[*_`]/g, '')
+
+/** A Markdown plan, outside fenced code blocks: its checkboxes, and its `### Task N:` headings with the boxes beneath each. */
+export function parsePlan(text: string): { items: { text: string; done: boolean }[]; tasks: PlanTask[] } {
   const items: { text: string; done: boolean }[] = []
+  const tasks: PlanTask[] = []
   let fence: string | null = null
   for (const line of text.split('\n')) {
     const marker = /^\s*(```+|~~~+)/.exec(line)?.[1]
@@ -203,10 +212,38 @@ export function parseCheckboxes(text: string): { text: string; done: boolean }[]
       continue
     }
     if (fence !== null) continue
+    const heading = TASK_HEADING.exec(line)
+    if (heading !== null) {
+      tasks.push({ n: Number(heading[1]), text: plain(heading[2] ?? ''), steps: 0, stepsDone: 0 })
+      continue
+    }
     const m = CHECKBOX.exec(line)
-    if (m !== null) items.push({ text: (m[2] ?? '').replace(/[*_`]/g, ''), done: m[1] !== ' ' })
+    if (m === null) continue
+    const done = m[1] !== ' '
+    items.push({ text: plain(m[2] ?? ''), done })
+    const task = tasks[tasks.length - 1]
+    if (task !== undefined) {
+      task.steps += 1
+      if (done) task.stepsDone += 1
+    }
   }
-  return items.slice(0, 300)
+  return { items: items.slice(0, 300), tasks: tasks.slice(0, 100) }
+}
+
+/** The checkbox items of a Markdown text, outside fenced code blocks. */
+export function parseCheckboxes(text: string): { text: string; done: boolean }[] {
+  return parsePlan(text).items
+}
+
+/** The task numbers a superpowers ledger (or task-done's output) reports complete. */
+export function ledgerTasks(text: string): number[] {
+  return [...new Set([...text.matchAll(LEDGER_DONE)].map(m => Number(m[1])))]
+}
+
+/** The file name of the plan a ledger names in its first line, if it names one. */
+export function ledgerPlanName(text: string): string | null {
+  const path = LEDGER_PLAN.exec(text)?.[1]
+  return path === undefined ? null : path.split('/').pop() || path
 }
 
 export const isMarkdown = (path: string) => /\.(md|markdown|mdx)$/i.test(path)

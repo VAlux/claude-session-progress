@@ -37,6 +37,7 @@ Answer `y` to add the marketplace, then pick a scope. The user scope loads it in
 | --- | --- |
 | A task list (`TodoWrite`, or `TaskCreate` / `TaskUpdate`) | Done ÷ total, with the task in progress counting as half |
 | A Markdown plan with `- [ ]` / `- [x]` boxes that Claude reads or edits | Ticked ÷ total, moving forward as boxes are ticked |
+| A plan with two or more `### Task N:` headings | Done tasks ÷ total. A task is done when all its boxes are ticked, or when a superpowers ledger reports `Task N: complete`, whether in a Bash call's output (`task-done`) or in its `progress.md` that Claude reads. superpowers' executor never ticks a plan's boxes, so without this its plans stayed at 0%. |
 | Neither | A soft streak sweeps the track. There is no honest percentage to show, so it does not invent one. |
 
 A task list wins over a plan file. A plan that is still unfinished carries over to the next turn, and a finished one is cleared. A subagent's own task list never replaces the main one, but a subagent can still mark the main session's tasks done.
@@ -61,7 +62,7 @@ Change it in `/config`, or with `claude plugin configure session-progress`.
 
 | Setting | Values | What it does |
 | --- | --- | --- |
-| `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's checkboxes only, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
+| `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's steps or tasks only, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
 
 To make the band your only task view, hide Claude Code's own list with `ctrl+t` and set `stepRows` to `always`.
 
@@ -85,7 +86,7 @@ claude plugin test ./claude-session-progress
 | Path | What it holds |
 | --- | --- |
 | [`hooks/register.tsx`](hooks/register.tsx) | The hooks: turn and tool tracking, plan files, the system-prompt line, the band |
-| [`hooks/frames.ts`](hooks/frames.ts) | Bar and spinner frames, the checkbox parser, formatting |
+| [`hooks/frames.ts`](hooks/frames.ts) | Bar and spinner frames, the plan and ledger parsers, formatting |
 | [`types/index.d.ts`](types/index.d.ts) | The mod's state contract |
 | [`tests/`](tests) | Behaviour tests, run with `claude plugin test` |
 

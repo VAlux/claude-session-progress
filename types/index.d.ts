@@ -4,8 +4,16 @@ export type Task = { id: string; subject: string; activeForm?: string; status: T
 
 export type PlanItem = { text: string; done: boolean }
 
-/** A Markdown plan or spec whose `- [ ]` / `- [x]` boxes stand for the steps. */
-export type PlanFile = { path: string; name: string; items: PlanItem[] }
+/** A `### Task N:` heading of a plan, with the boxes beneath it. */
+export type PlanTask = { n: number; text: string; steps: number; stepsDone: number }
+
+/**
+ * A Markdown plan or spec whose `- [ ]` / `- [x]` boxes stand for the steps.
+ * With two or more `### Task N:` headings its tasks are the steps instead, and `completed`
+ * holds the ones a superpowers ledger reported done (its executor never ticks the boxes).
+ * Both are absent on a plan kept from before they existed.
+ */
+export type PlanFile = { path: string; name: string; items: PlanItem[]; tasks?: PlanTask[]; completed?: number[] }
 
 export type Live = {
   turnId: string
