@@ -70,6 +70,7 @@ To make the band your only task view, hide Claude Code's own list with `ctrl+t` 
 - It draws in the terminal only. Other surfaces show nothing extra.
 - Collapse the band at any time with `ctrl+x ctrl+a`, or with the `[-]` mark at its right edge.
 - A bug in the mod never blocks a tool call: its tool hook passes the call through if it fails.
+- It shares the space above the prompt: another mod's band there (factory-floor's strip, say) is drawn above it, not hidden.
 - It is built on Claude Code's function-hooks plugin API, which is in early access and may change between releases.
 
 ## Develop

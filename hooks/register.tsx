@@ -431,6 +431,10 @@ export const register: Register = (on, options) => {
     const showSummary = !showLive && s !== null && !e.props.isWorking
     if (!showLive && !showSummary) return next(e)
 
+    // Another mod's band beneath this one (factory-floor's strip, say) stays visible, drawn above ours.
+    const below = await next(e)
+    const maxRows = Math.max(1, e.props.maxRows - (below == null ? 0 : 2))
+
     const { Box, Text, Raster } = $.ui.resolve(e)
     const width = Math.max(20, e.props.bodyColumns)
     const now = await $.clock.now()
@@ -510,7 +514,7 @@ export const register: Register = (on, options) => {
         )
       }
 
-      const room = Math.max(0, Math.min(MAX_TASK_ROWS, e.props.maxRows - rows.length - 1))
+      const room = Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1))
       if (plan.length > 0 && room > 0 && showsStepRows(stepRows, steps.unit)) {
         // Keep the active task in view: start from just before the first unfinished one.
         const firstOpen = Math.max(0, plan.findIndex(task => task.status !== 'completed'))
@@ -530,7 +534,12 @@ export const register: Register = (on, options) => {
         if (hidden > 0) rows.push(<Text key="more" dimColor>{`    +${hidden} more`}</Text>)
       }
 
-      return <Box flexDirection="column">{rows.slice(0, Math.max(1, e.props.maxRows))}</Box>
+      return (
+        <Box flexDirection="column">
+          {below}
+          {rows.slice(0, Math.max(1, maxRows))}
+        </Box>
+      )
     }
 
     const sum = s as Summary
@@ -561,6 +570,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
+        {below}
         <Box key="head-row" flexDirection="row" justifyContent="space-between" width={width}>
           <Box flexDirection="row" flexShrink={1}>
             <Raster key={SPINNER_KEY} columns={1} rows={1} cells={glyphCells(mark, palette.base)} />
