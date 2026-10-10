@@ -1,6 +1,6 @@
 {
   "name": "session-progress",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Animated progress band for long-running turns, with a completion summary",
   "author": {
     "name": "Oleksandr Voievodin"

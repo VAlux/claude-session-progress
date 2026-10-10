@@ -151,3 +151,18 @@ test('stepRows: never lists nothing, not even a plan file', { options: { stepRow
   expect(await shows($, true, /Validate/)).toBe(false)
   expect(await shows($, true, /Writing tests/)).toBe(true)
 })
+
+test('the band draws whatever is beneath it above itself, instead of hiding it', async ($, on) => {
+  engineBottom(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'investigate', turnId: 't1' })
+  for (const command of ['ls', 'git status', 'npm test']) await $.tool.call({ tool: 'Bash', command })
+  await clock.advance(21_000)
+  const ui = await band($, true)
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  await ui.unmount()
+  const below = texts.findIndex(t => /engine-band/.test(t))
+  const stats = texts.findIndex(t => /3 tool calls/.test(t))
+  expect(below).toBeGreaterThanOrEqual(0)
+  expect(below).toBeLessThan(stats)
+})
