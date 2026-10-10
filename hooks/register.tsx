@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Live, PlanFile, Summary, Task, TaskStatus, Totals } from '../types'
+import type { Live, PlanFile, PlanTask, Summary, Task, TaskStatus, Totals } from '../types'
 import {
   ACCENT,
   DONE,
@@ -14,7 +14,9 @@ import {
   duration,
   glyphCells,
   isMarkdown,
-  parseCheckboxes,
+  ledgerPlanName,
+  ledgerTasks,
+  parsePlan,
   plural,
   shortToolName,
   spinnerCells,
@@ -120,7 +122,21 @@ type Steps = { list: Task[]; progress: number | null; unit: 'tasks' | 'steps'; s
 
 export function stepsOf(taskList: readonly Task[], plan: PlanFile | null): Steps {
   if (taskList.length > 0) return { list: [...taskList], progress: planProgress(taskList), unit: 'tasks', source: null }
-  if (plan === null || plan.items.length < 2) return { list: [], progress: null, unit: 'tasks', source: null }
+  if (plan === null) return { list: [], progress: null, unit: 'tasks', source: null }
+  const headed = plan.tasks ?? []
+  if (headed.length >= 2) {
+    // A task is done when a ledger reported it or all its boxes are ticked: superpowers' executor only does the first.
+    const completed = new Set(plan.completed ?? [])
+    const isDone = (task: PlanTask) => completed.has(task.n) || (task.steps > 0 && task.stepsDone === task.steps)
+    const firstOpen = headed.findIndex(task => !isDone(task))
+    const list = headed.map((task, i): Task => ({
+      id: `plan-task-${task.n}`,
+      subject: task.text,
+      status: isDone(task) ? 'completed' : i === firstOpen ? 'in_progress' : 'pending',
+    }))
+    return { list, progress: headed.filter(isDone).length / headed.length, unit: 'tasks', source: plan.name }
+  }
+  if (plan.items.length < 2) return { list: [], progress: null, unit: 'tasks', source: null }
   const firstOpen = plan.items.findIndex(item => !item.done)
   const list = plan.items.map((item, i): Task => ({
     id: `plan-${i}`,
@@ -144,15 +160,36 @@ async function trackPlanFile($: Dollar, path: string, written: string | null) {
       return
     }
   }
-  const items = parseCheckboxes(text)
+  const { items, tasks: headed } = parsePlan(text)
+  const reported = ledgerTasks(text)
   const name = path.split('/').pop() || path
   await update($, planFile, current => {
-    if (items.length < 2) return current?.path === path ? null : current
+    if (items.length < 2) {
+      // A superpowers ledger read on its own ticks the plan it names (or the current one, if it names none).
+      if (reported.length > 0 && current !== null && current.path !== path) {
+        const of = ledgerPlanName(text)
+        if (of === null || of === current.name) return withCompleted(current, reported)
+      }
+      return current?.path === path ? null : current
+    }
     // Another file only takes over while it still has open steps (a finished checklist read for reference does not).
     const isOpen = items.some(item => !item.done)
     if (current !== null && current.path !== path && !isOpen && current.items.some(item => !item.done)) return current
-    return { path, name, items }
+    return { path, name, items, tasks: headed, completed: current?.path === path ? (current.completed ?? []) : [] }
   })
+}
+
+function withCompleted(plan: PlanFile, numbers: readonly number[]): PlanFile {
+  const known = plan.completed ?? []
+  const added = numbers.filter(n => !known.includes(n))
+  return added.length === 0 ? plan : { ...plan, completed: [...known, ...added] }
+}
+
+/** The tasks a Bash call reports complete in its output, as superpowers' task-done prints them. */
+function bashReported(ran: unknown): number[] {
+  const r = ran as { result?: { stdout?: unknown }; text?: unknown }
+  const out = typeof r.result?.stdout === 'string' ? r.result.stdout : typeof r.text === 'string' ? r.text : ''
+  return ledgerTasks(out)
 }
 
 export function shouldShow(l: Live, now: number, planSize: number): boolean {
@@ -260,8 +297,8 @@ async function trackPlan($: Dollar, e: { tool: string } & Record<string, unknown
 type StepRows = 'auto' | 'always' | 'never'
 
 /** Whether the band lists the steps: in `auto`, only a plan file's, since Claude Code draws its own task list. */
-export function showsStepRows(setting: StepRows, unit: 'tasks' | 'steps'): boolean {
-  return setting === 'always' || (setting === 'auto' && unit === 'steps')
+export function showsStepRows(setting: StepRows, fromPlanFile: boolean): boolean {
+  return setting === 'always' || (setting === 'auto' && fromPlanFile)
 }
 
 export const register: Register = (on, options) => {
@@ -289,7 +326,7 @@ export const register: Register = (on, options) => {
     await update($, summary, () => null)
     // A plan that finished last turn starts this one clean; an unfinished one carries on.
     await update($, tasks, list => (list.length > 0 && list.every(t => t.status === 'completed') ? [] : list))
-    await update($, planFile, plan => (plan !== null && plan.items.every(item => item.done) ? null : plan))
+    await update($, planFile, plan => (plan !== null && stepsOf([], plan).progress === 1 ? null : plan))
     await update($, live, () => freshLive(e.turnId, now))
     stopFrames()
     scene.isFinishing = false
@@ -354,6 +391,10 @@ export const register: Register = (on, options) => {
           },
     )
     if (!failed && tracksPlanTool(e.tool, isSub)) await trackPlan($, input, ran.result)
+    if (!failed && e.tool === 'Bash') {
+      const reported = bashReported(ran)
+      if (reported.length > 0) await update($, planFile, plan => (plan === null ? plan : withCompleted(plan, reported)))
+    }
     if (!failed && PLAN_FILE_TOOLS.has(e.tool) && path !== null && isMarkdown(path)) {
       await trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null)
     }
@@ -515,7 +556,7 @@ export const register: Register = (on, options) => {
       }
 
       const room = Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1))
-      if (plan.length > 0 && room > 0 && showsStepRows(stepRows, steps.unit)) {
+      if (plan.length > 0 && room > 0 && showsStepRows(stepRows, steps.source !== null)) {
         // Keep the active task in view: start from just before the first unfinished one.
         const firstOpen = Math.max(0, plan.findIndex(task => task.status !== 'completed'))
         const start = Math.max(0, Math.min(firstOpen - 1, plan.length - room))
