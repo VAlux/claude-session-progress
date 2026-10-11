@@ -95,7 +95,7 @@ test("viewing a subagent's transcript shows that subagent's progress, not the ma
   expect(await shows($, /1\/4 tasks/, a1)).toBe(true)
   expect(await shows($, /38%/, a1)).toBe(true)
   expect(await shows($, /2 tool calls/, a1)).toBe(true)
-  expect(await shows($, /1 file changed/, a1)).toBe(true)
+  expect(await shows($, /1 file \+1 −1/, a1)).toBe(true)
   expect(await shows($, /Waiting for/, a1), "the main turn's summary stays with the main view").toBe(false)
   expect(await shows($, /Check the docs/, a1), "a subagent's list is drawn nowhere else, so its band lists it").toBe(true)
 

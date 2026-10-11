@@ -89,7 +89,7 @@ for (const surface of SURFACES) {
     expect(await shows($, surface, true, /Writing tests/), 'headline').toBe(true)
     expect(await shows($, surface, true, /63%/), 'percentage').toBe(true)
     expect(await shows($, surface, true, /2\/4 tasks/), 'task count').toBe(true)
-    expect(await shows($, surface, true, /1 file changed/), 'stats').toBe(true)
+    expect(await shows($, surface, true, /1 file \+1 −1/), 'stats').toBe(true)
 
     await $.turn.complete(done('t1', 95_000))
     await clock.advance(2_000)

@@ -73,7 +73,7 @@ test('a long planned turn shows progress, then a summary, then hides on the next
   expect(await shows($, true, /Writing tests/), 'shows /Writing tests/ (working=true)').toBe(true)
   expect(await shows($, true, /63%/), 'shows /63%/ (working=true)').toBe(true)
   expect(await shows($, true, /2\/4 tasks/), 'shows /2\/4 tasks/ (working=true)').toBe(true)
-  expect(await shows($, true, /1 file changed/), 'shows /1 file changed/ (working=true)').toBe(true)
+  expect(await shows($, true, /1 file \+1 −1/), 'shows /1 file \+1 −1/ (working=true)').toBe(true)
 
   await $.turn.complete(done('t1', 95_000))
   await clock.advance(2_000) // the bar and its label fill to 100% as the finish plays
@@ -160,10 +160,11 @@ test('the band draws whatever is beneath it above itself, instead of hiding it',
   for (const command of ['ls', 'git status', 'npm test']) await $.tool.call({ tool: 'Bash', command })
   await clock.advance(21_000)
   const ui = await band($, true)
-  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  // Every element in document order: the stats are Buttons, the engine's band a Text.
+  const texts = (await ui.findAll({})).map(t => t.text)
   await ui.unmount()
   const below = texts.findIndex(t => /engine-band/.test(t))
-  const stats = texts.findIndex(t => /3 tool calls/.test(t))
+  const stats = texts.findIndex(t => /^⚒ 3 tool calls$/.test(t))
   expect(below).toBeGreaterThanOrEqual(0)
   expect(below).toBeLessThan(stats)
 })

@@ -1,7 +1,23 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register, Timer } from 'claude-code'
+import type { Color, Elements, EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AgentRun, Live, PlanFile, PlanTask, Summary, Task, TaskStatus, Totals } from '../types'
+import type { AgentRun, Detail, Live, PlanFile, PlanTask, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
+import {
+  ICONS,
+  detailLines,
+  detailOf,
+  editLines,
+  emptyDetail,
+  errorText,
+  finishCall,
+  withAgent,
+  withCall,
+  withFile,
+  withRead,
+  withStep,
+  type DetailLine,
+  type DetailSource,
+} from './details'
 import {
   ACCENT,
   DONE,
@@ -41,6 +57,7 @@ const totals = atom({ plugin: 'session-progress', key: 'totals' } as const, {
 })
 const tick = atom({ plugin: 'session-progress', key: 'tick' } as const, 0)
 const agents = atom({ plugin: 'session-progress', key: 'agents' } as const, [])
+const openStat = atom({ plugin: 'session-progress', key: 'openStat' } as const, null)
 
 // When a turn earns the band: a quick answer or a short Q/A never does.
 const SHOW_AFTER_MS = 20_000
@@ -53,6 +70,7 @@ const FINISH_MS = 1_400
 const SPINNER_KEY = 'spin'
 const BAR_KEY = 'bar'
 const MAX_TASK_ROWS = 5
+const MAX_DETAIL_ROWS = 8
 // A subagent's band draws its own Raster keys, so the main bar's frame loop never paints into it.
 const AGENT_SPINNER_KEY = 'agent-spin'
 const AGENT_BAR_KEY = 'agent-bar'
@@ -157,13 +175,14 @@ function freshLive(turnId: string, startedAt: number): Live {
     subagents: 0,
     errors: 0,
     byTool: {},
-    files: [],
     running: [],
     lastActivity: null,
     tokensIn: 0,
     tokensCached: 0,
+    tokensCacheWrite: 0,
     tokensOut: 0,
     model: null,
+    detail: emptyDetail(),
   }
 }
 
@@ -181,11 +200,11 @@ function freshAgent(id: string, startedAt: number): AgentRun {
     steps: 0,
     toolCalls: 0,
     errors: 0,
-    files: [],
     running: [],
     lastActivity: null,
     tokensIn: 0,
     tokensOut: 0,
+    detail: emptyDetail(),
     tasks: [],
   }
 }
@@ -407,6 +426,19 @@ function applyPlanTool(list: Task[], e: { tool: string } & Record<string, unknow
   return list
 }
 
+/** One count under the bar, drawn with its kind's icon; pressed, it opens that kind's details. */
+type Stat = { kind: StatKind; text: string; color?: Color; lines?: { added: number; removed: number } }
+
+const stat = (kind: StatKind, text: string, color?: Color): Stat => (color === undefined ? { kind, text } : { kind, text, color })
+
+/** Files changed, with the lines added and removed where every write could be measured. */
+export function filesStat(detail: Detail, count = detail.files.length): Stat {
+  const measured = detail.files.length > 0 && detail.files.every(f => f.added !== null && f.removed !== null)
+  if (!measured) return stat('files', `${plural(count, 'file')} changed`)
+  const lines = detail.files.reduce((sum, f) => ({ added: sum.added + (f.added ?? 0), removed: sum.removed + (f.removed ?? 0) }), { added: 0, removed: 0 })
+  return { kind: 'files', text: plural(count, 'file'), lines }
+}
+
 type StepRows = 'auto' | 'always' | 'never'
 
 /** Whether the band lists the steps: in `auto`, only a plan file's, since Claude Code draws its own task list. */
@@ -448,15 +480,27 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.step', async function* ($, e, next) {
+    const startedAt = await $.clock.now()
     const result = yield* next(e)
     const usage = result.usage
+    const stepIn = usage ? usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens : 0
+    const stepOut = usage?.output_tokens ?? 0
+    const now = await $.clock.now()
+    const step = {
+      index: e.index,
+      durationMs: now - startedAt,
+      tools: result.toolUses.map(use => shortToolName(use.name)),
+      tokensIn: stepIn,
+      tokensOut: stepOut,
+      stopReason: result.stopReason,
+    }
     if (e.agentId !== undefined) {
-      const now = await $.clock.now()
       await updateAgent($, e.agentId, now, run => ({
         ...run,
         steps: run.steps + 1,
-        tokensIn: run.tokensIn + (usage ? usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens : 0),
-        tokensOut: run.tokensOut + (usage?.output_tokens ?? 0),
+        tokensIn: run.tokensIn + stepIn,
+        tokensOut: run.tokensOut + stepOut,
+        detail: withStep(detailOf(run), step),
       }))
     }
     await update($, live, l => {
@@ -464,10 +508,12 @@ export const register: Register = (on, options) => {
       return {
         ...l,
         steps: e.agentId === undefined ? l.steps + 1 : l.steps,
-        tokensIn: l.tokensIn + (usage ? usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens : 0),
+        tokensIn: l.tokensIn + stepIn,
         tokensCached: l.tokensCached + (usage?.cache_read_input_tokens ?? 0),
-        tokensOut: l.tokensOut + (usage?.output_tokens ?? 0),
+        tokensCacheWrite: (l.tokensCacheWrite ?? 0) + (usage?.cache_creation_input_tokens ?? 0),
+        tokensOut: l.tokensOut + stepOut,
         model: e.agentId === undefined ? (usage?.model ?? e.model) : l.model,
+        detail: e.agentId === undefined ? withStep(detailOf(l), step) : l.detail,
       }
     })
     return result
@@ -486,6 +532,8 @@ export const register: Register = (on, options) => {
     const isAgent = e.tool === 'Agent' || String(e.tool) === 'Task'
     const now = await $.clock.now()
 
+    const call = { id: e.tool_use_id, tool: e.tool, label, agentId, startedAt: now, durationMs: null, status: 'running' as const }
+
     if (agentId !== undefined) {
       await updateAgent($, agentId, now, run => ({
         ...run,
@@ -494,6 +542,7 @@ export const register: Register = (on, options) => {
         toolCalls: run.toolCalls + 1,
         running: [...run.running, { id: e.tool_use_id, label }],
         lastActivity: label,
+        detail: withCall(detailOf(run), { ...call, agentId: undefined }),
       }))
       startTicking($)
     }
@@ -509,12 +558,28 @@ export const register: Register = (on, options) => {
             byTool: isSub ? l.byTool : { ...l.byTool, [name]: (l.byTool[name] ?? 0) + 1 },
             running: isSub ? l.running : [...l.running, { id: e.tool_use_id, label }],
             lastActivity: isSub ? l.lastActivity : label,
+            detail: withCall(detailOf(l), call),
           },
     )
 
     const ran = await next(e)
     const failed = ran.deny !== undefined || ran.isError === true
     const path = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : null
+    const ended = await $.clock.now()
+    const finished = { durationMs: ended - now, status: failed ? ('error' as const) : ('ok' as const), error: failed ? errorText(ran) : undefined }
+    const wrote = !failed && WRITE_TOOLS.has(e.tool) && path !== null
+    const lines = wrote ? editLines(e.tool, input, ran.result) : null
+    const isRead = !failed && e.tool === 'Read' && path !== null
+    const started = (ran.result as { agentId?: unknown; agentType?: unknown } | undefined) ?? {}
+    const startedId = !failed && isAgent && typeof started.agentId === 'string' ? started.agentId : null
+    /** What this call adds to a turn's or a run's details once it has run. */
+    const ranInto = (d: Detail): Detail => {
+      let out = finishCall(d, e.tool_use_id, finished)
+      if (path !== null && wrote) out = withFile(out, path, lines)
+      if (path !== null && isRead) out = withRead(out, path)
+      if (startedId !== null) out = withAgent(out, startedId)
+      return out
+    }
 
     await update($, live, l =>
       l === null
@@ -523,7 +588,7 @@ export const register: Register = (on, options) => {
             ...l,
             errors: failed ? l.errors + 1 : l.errors,
             running: l.running.filter(r => r.id !== e.tool_use_id),
-            files: !failed && WRITE_TOOLS.has(e.tool) && path !== null && !l.files.includes(path) ? [...l.files, path].slice(-500) : l.files,
+            detail: ranInto(detailOf(l)),
           },
     )
     if (agentId !== undefined) {
@@ -531,21 +596,18 @@ export const register: Register = (on, options) => {
         ...run,
         errors: failed ? run.errors + 1 : run.errors,
         running: run.running.filter(r => r.id !== e.tool_use_id),
-        files: !failed && WRITE_TOOLS.has(e.tool) && path !== null && !run.files.includes(path) ? [...run.files, path].slice(-200) : run.files,
+        detail: ranInto(detailOf(run)),
         tasks: !failed && PLAN_TOOLS.has(e.tool) ? applyPlanTool(run.tasks, input, ran.result) : run.tasks,
       }))
     }
-    if (!failed && isAgent) {
-      const started = (ran.result as { agentId?: unknown; agentType?: unknown } | undefined) ?? {}
-      if (typeof started.agentId === 'string') {
-        await updateAgent($, started.agentId, now, run => ({
-          ...run,
-          description: typeof input.description === 'string' ? input.description : run.description,
-          type: typeof started.agentType === 'string' ? started.agentType : typeof input.subagent_type === 'string' ? input.subagent_type : run.type,
-          parentId: agentId ?? null,
-          dispatchedByMain: !isSub,
-        }))
-      }
+    if (startedId !== null) {
+      await updateAgent($, startedId, now, run => ({
+        ...run,
+        description: typeof input.description === 'string' ? input.description : run.description,
+        type: typeof started.agentType === 'string' ? started.agentType : typeof input.subagent_type === 'string' ? input.subagent_type : run.type,
+        parentId: agentId ?? null,
+        dispatchedByMain: !isSub,
+      }))
     }
     if (!isLive) return ran
 
@@ -599,15 +661,17 @@ export const register: Register = (on, options) => {
           topTools: Object.entries(l.byTool)
             .sort((a, b) => b[1] - a[1])
             .slice(0, 6),
-          files: l.files.length,
+          files: detailOf(l).files.length,
           tasksDone: plan.list.filter(t => t.status === 'completed').length,
           tasksTotal: plan.list.length,
           stepsUnit: plan.unit,
           stepsSource: plan.source,
           tokensIn,
           tokensCached: Math.max(l.tokensCached, usage?.cache_read_input_tokens ?? 0),
+          tokensCacheWrite: Math.max(l.tokensCacheWrite ?? 0, usage?.cache_creation_input_tokens ?? 0),
           tokensOut,
           model: usage?.model ?? l.model,
+          detail: detailOf(l),
         }
         await update($, summary, () => done)
         // Handed off to a background subagent, the work is not done: the bar keeps what the plan says.
@@ -630,8 +694,9 @@ export const register: Register = (on, options) => {
     if ((e.surface !== 'terminal' && e.surface !== 'desktop') || e.props.hasSurvey) return next(e)
 
     await read($, tick) // redraw each second for the clock
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, e.props.bodyColumns)
+    const opened = await read($, openStat)
     const isTerminal = e.surface === 'terminal'
     const marks = e.surface === 'terminal' ? terminalMarks($.ui.resolve(e), width) : desktopMarks($.ui.resolve(e))
 
@@ -656,6 +721,61 @@ export const register: Register = (on, options) => {
       const hidden = list.length - visible.length
       if (hidden > 0) out.push(<Text key="more" dimColor>{`    +${hidden} more`}</Text>)
       return out
+    }
+
+    /** One stat as a Button that opens its details under the row, or closes them when they are open. */
+    const statButton = (stat: Stat) => {
+      const isOpen = opened === stat.kind
+      const iconColor = stat.color ?? (isOpen ? 'claude' : undefined)
+      const parts: (string | JSX.Element)[] = [
+        iconColor === undefined ? <Text key="icon">{ICONS[stat.kind]}</Text> : <Text key="icon" color={iconColor}>{ICONS[stat.kind]}</Text>,
+        ` ${stat.text}`,
+      ]
+      if (stat.lines !== undefined) {
+        parts.push(' ', <Text key="added" color="success">{`+${stat.lines.added}`}</Text>, ' ', <Text key="removed" color="error">{`−${stat.lines.removed}`}</Text>)
+      }
+      if (isOpen) parts.push(' ▾')
+      return (
+        <Box key={`stat-box-${stat.kind}`} flexShrink={0}>
+          <Button key={`stat-${stat.kind}`} plain dimColor={!isOpen} onPress={() => void update($, openStat, now => (now === stat.kind ? null : stat.kind))}>
+            {parts}
+          </Button>
+        </Box>
+      )
+    }
+
+    /** A row of stats, wrapping onto a second line rather than cutting one off. */
+    const statsRow = (key: string, items: readonly (Stat | false)[]) => (
+      <Box key={key} flexDirection="row" flexWrap="wrap" columnGap={2} width={marks.rowWidth}>
+        {items.filter((item): item is Stat => item !== false).map(statButton)}
+      </Box>
+    )
+
+    /** The open stat's details, when this band draws that stat. */
+    const detailRowsOf = (items: readonly (Stat | false)[], src: DetailSource, room: number) => {
+      if (opened === null || !items.some(item => item !== false && item.kind === opened)) return []
+      return detailLines(opened, src, Math.min(MAX_DETAIL_ROWS, room)).map(line => detailRow(line))
+    }
+
+    const detailRow = (line: DetailLine) => {
+      const parts: (string | JSX.Element)[] = ['  ']
+      if (line.glyph !== undefined) {
+        parts.push(line.color === undefined ? `${line.glyph} ` : <Text key="glyph" color={line.color}>{`${line.glyph} `}</Text>)
+      }
+      parts.push(line.text)
+      if (line.lines !== undefined) {
+        parts.push('  ', <Text key="added" color="success">{`+${line.lines.added}`}</Text>, ' ', <Text key="removed" color="error">{`−${line.lines.removed}`}</Text>)
+      }
+      if (line.trail !== undefined) parts.push(<Text key="trail" dimColor>{`  ${line.trail}`}</Text>)
+      return line.isNote ? (
+        <Text key={`detail-${line.key}`} dimColor wrap="truncate-end">
+          {parts}
+        </Text>
+      ) : (
+        <Text key={`detail-${line.key}`} wrap="truncate-end">
+          {parts}
+        </Text>
+      )
     }
 
     // A subagent's transcript in view: its own run, never the main conversation's.
@@ -685,13 +805,25 @@ export const register: Register = (on, options) => {
       const barWidth = Math.max(12, width - BAR_SLACK)
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
       const label = progress === null ? '' : pctLabel(progress)
+      const detail = detailOf(run)
       const stats = [
-        plural(run.toolCalls, 'tool call'),
-        run.files.length > 0 ? `${plural(run.files.length, 'file')} changed` : null,
-        run.steps > 0 ? plural(run.steps, 'step') : null,
-        run.tokensOut > 0 ? `${tokens(run.tokensIn)}↑ ${tokens(run.tokensOut)}↓` : null,
-        run.errors > 0 ? plural(run.errors, 'error') : null,
-      ].filter(Boolean)
+        stat('tools', plural(run.toolCalls, 'tool call')),
+        detail.files.length > 0 && filesStat(detail),
+        detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
+        run.steps > 0 && stat('steps', plural(run.steps, 'step')),
+        run.tokensOut > 0 && stat('tokens', `${tokens(run.tokensIn)}↑ ${tokens(run.tokensOut)}↓`),
+        run.errors > 0 && stat('errors', plural(run.errors, 'error'), 'error'),
+      ]
+      const src: DetailSource = {
+        detail,
+        agents: [],
+        tasks: list,
+        tokensIn: run.tokensIn,
+        tokensOut: run.tokensOut,
+        model: null,
+        now,
+        columns: width,
+      }
       const mark = !isDone ? null : run.reason === 'answer' ? '✓' : run.reason === 'aborted' ? '■' : '✗'
 
       const rows = [
@@ -711,10 +843,9 @@ export const register: Register = (on, options) => {
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
           {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor: progress === null ? MUTED : palette.base })}
         </Box>,
-        <Text key="stats" dimColor wrap="truncate-end">
-          {stats.join('  ·  ')}
-        </Text>,
+        statsRow('stats', stats),
       ]
+      rows.push(...detailRowsOf(stats, src, maxRows - rows.length - 1))
       if (!isDone && run.running.length > 1) {
         rows.push(
           <Text key="running" dimColor wrap="truncate-end">
@@ -775,14 +906,28 @@ export const register: Register = (on, options) => {
       const current = plan.find(task => task.status === 'in_progress')
       const headline = current?.activeForm ?? current?.subject ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking'
       const done = plan.filter(task => task.status === 'completed').length
+      const detail = detailOf(l)
       const stats = [
-        plural(l.toolCalls, 'tool call'),
-        l.subagents > 0 ? `${plural(l.subagents, 'subagent')} (${l.subagentToolCalls} calls)` : null,
-        l.files.length > 0 ? `${plural(l.files.length, 'file')} changed` : null,
-        plural(l.steps, 'step'),
-        l.tokensOut > 0 ? `${tokens(l.tokensIn)}↑ ${tokens(l.tokensOut)}↓` : null,
-        l.errors > 0 ? plural(l.errors, 'error') : null,
-      ].filter(Boolean)
+        stat('tools', plural(l.toolCalls, 'tool call')),
+        l.subagents > 0 && stat('subagents', `${plural(l.subagents, 'subagent')} (${l.subagentToolCalls} calls)`),
+        detail.files.length > 0 && filesStat(detail),
+        detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
+        stat('steps', plural(l.steps, 'step')),
+        l.tokensOut > 0 && stat('tokens', `${tokens(l.tokensIn)}↑ ${tokens(l.tokensOut)}↓`),
+        l.errors > 0 && stat('errors', plural(l.errors, 'error'), 'error'),
+      ]
+      const src: DetailSource = {
+        detail,
+        agents: await read($, agents),
+        tasks: plan,
+        tokensIn: l.tokensIn,
+        tokensOut: l.tokensOut,
+        tokensCached: l.tokensCached,
+        tokensCacheWrite: l.tokensCacheWrite,
+        model: l.model,
+        now,
+        columns: width,
+      }
 
       const rows = [
         <Box key="head-row" flexDirection="row" justifyContent="space-between" width={marks.rowWidth}>
@@ -807,10 +952,9 @@ export const register: Register = (on, options) => {
             labelColor: progress === null ? MUTED : ACCENT.base,
           })}
         </Box>,
-        <Text key="stats" dimColor wrap="truncate-end">
-          {stats.join('  ·  ')}
-        </Text>,
+        statsRow('stats', stats),
       ]
+      rows.push(...detailRowsOf(stats, src, maxRows - rows.length - 1))
 
       if (l.running.length > 1) {
         rows.push(
@@ -869,16 +1013,33 @@ export const register: Register = (on, options) => {
     const label = finalProgress === null || barProgress === null ? '' : pctLabel(barProgress)
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0
 
+    const detail = detailOf(sum)
     const work = [
-      plural(sum.toolCalls, 'tool call'),
-      sum.subagents > 0 ? `${plural(sum.subagents, 'subagent')} (${sum.subagentToolCalls} calls)` : null,
-      sum.files > 0 ? `${plural(sum.files, 'file')} changed` : null,
-      plural(sum.steps, 'model step'),
-      sum.tasksTotal > 0
-        ? `${sum.tasksDone}/${sum.tasksTotal} ${sum.stepsUnit} done${sum.stepsSource !== null ? ` (${sum.stepsSource})` : ''}`
-        : null,
-      sum.errors > 0 ? plural(sum.errors, 'failed call') : null,
-    ].filter(Boolean)
+      stat('tools', plural(sum.toolCalls, 'tool call')),
+      sum.subagents > 0 && stat('subagents', `${plural(sum.subagents, 'subagent')} (${sum.subagentToolCalls} calls)`),
+      sum.files > 0 && filesStat(detail, sum.files),
+      detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
+      stat('steps', plural(sum.steps, 'model step')),
+      sum.tasksTotal > 0 &&
+        stat('tasks', `${sum.tasksDone}/${sum.tasksTotal} ${sum.stepsUnit} done${sum.stepsSource !== null ? ` (${sum.stepsSource})` : ''}`),
+      sum.errors > 0 && stat('errors', plural(sum.errors, 'failed call'), 'error'),
+    ]
+    const usage = [stat('tokens', `${tokens(sum.tokensIn)} in (${cachePct}% cached) · ${tokens(sum.tokensOut)} out${sum.model ? ` · ${sum.model}` : ''}`)]
+    const src: DetailSource = {
+      detail,
+      agents: await read($, agents),
+      tasks: plan,
+      tokensIn: sum.tokensIn,
+      tokensOut: sum.tokensOut,
+      tokensCached: sum.tokensCached,
+      tokensCacheWrite: sum.tokensCacheWrite,
+      model: sum.model,
+      now,
+      columns: width,
+    }
+    // The open stat's details sit under the row it belongs to.
+    const workDetail = detailRowsOf(work, src, maxRows - 4)
+    const usageDetail = detailRowsOf(usage, src, maxRows - 4)
 
     return (
       <Box flexDirection="column">
@@ -896,13 +1057,10 @@ export const register: Register = (on, options) => {
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
           {marks.bar(BAR_KEY, barWidth, barProgress, t, palette, { shimmer: isEasing, label, labelColor: palette.base })}
         </Box>
-        <Text key="work" dimColor wrap="truncate-end">
-          {work.join('  ·  ')}
-        </Text>
-        <Text key="tokens" dimColor wrap="truncate-end">
-          {tokens(sum.tokensIn)} in ({cachePct}% cached) · {tokens(sum.tokensOut)} out
-          {sum.model ? ` · ${sum.model}` : ''}
-        </Text>
+        {statsRow('work', work)}
+        {workDetail}
+        {statsRow('tokens', usage)}
+        {usageDetail}
         {sum.topTools.length > 0 && (
           <Text key="tools" dimColor wrap="truncate-end">
             {sum.topTools.map(([tool, n]) => `${tool} ${n}`).join('  ')}
@@ -911,7 +1069,7 @@ export const register: Register = (on, options) => {
         {/* After one turn the session's totals are that turn's. */}
         {total.turns > 1 && (
           <Text key="session" dimColor wrap="truncate-end">
-            session: {plural(total.turns, 'turn')} · {duration(total.totalMs)} · {tokens(total.tokensIn)} in · {tokens(total.tokensOut)} out ·{' '}
+            Σ session: {plural(total.turns, 'turn')} · {duration(total.totalMs)} · {tokens(total.tokensIn)} in · {tokens(total.tokensOut)} out ·{' '}
             {plural(total.toolCalls, 'call')}
           </Text>
         )}

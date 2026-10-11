@@ -28,12 +28,30 @@ The desktop app's Code tab has no `/plugin` command. Install it from a terminal 
 
 | | |
 | --- | --- |
-| **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts: tool calls, subagents, files changed, model steps, tokens and errors. Below them, what is running right now. |
+| **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts, each with its own icon: ⚒ tool calls, ⑂ subagents, ✎ files changed with the lines added and removed, ⌕ files read, ↻ model steps, ⇅ tokens and ⚠ errors. Below them, what is running right now. |
+| **When you click a count** | Its details open under the row (see [Details](#details)). Click it again to close them. |
 | **When the steps are known** | The bar shows real progress, and the headline names the step in progress. A plan file's steps are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
 | **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*, and its bar stays where the plan is instead of filling. |
 | **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
 | **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the model and the most-used tools, and, from the second turn on, one line of totals for the session. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
 | **On your next prompt** | The summary goes away. |
+
+## Details
+
+Each count under the bar is a button. Click it, or focus the band with `ctrl+x tab` and press Enter on it, and the band lists what is behind it. One list is open at a time, and it stays open across turns until you click the count again.
+
+| Count | What it lists |
+| --- | --- |
+| ⚒ tool calls | A tally by tool, then the latest calls: ✓ done, ◐ running, ✗ failed (with why), and how long each took |
+| ⑂ subagents | Each subagent the turn started: its description and type, its calls, output tokens and time, and what it is doing now |
+| ✎ files | Each file changed, by name, with the lines added and removed (`a.ts  +12 −3`). Two files with one name show their folder too |
+| ⌕ read | The files read, side by side |
+| ↻ steps | Time spent in the model and in tools, then each model request: the tools it called, its tokens and its time |
+| ⇅ tokens | Input split into fresh, cache read and cache write, output per step, the context at the last step, and the model |
+| ⚠ errors | Each failed call, a subagent's marked with ⑂, and why it failed |
+| ☰ tasks | In the summary: the task list or plan steps, with ✓ ◐ ○ |
+
+The summary keeps the finished turn's details, so you can open them after the turn ends. Line counts come from each edit's own patch. A notebook edit, or a rewrite of a file too large to diff, has no line count, and its file reads `changed` instead.
 
 ## How progress is measured
 
@@ -90,6 +108,7 @@ claude plugin test ./claude-session-progress
 | Path | What it holds |
 | --- | --- |
 | [`hooks/register.tsx`](hooks/register.tsx) | The hooks: turn and tool tracking, plan files, the system-prompt line, the band |
+| [`hooks/details.ts`](hooks/details.ts) | What each count opens onto: the per-call, per-file and per-step records, line counting, and the detail rows |
 | [`hooks/frames.ts`](hooks/frames.ts) | Bar and spinner frames (terminal cells, desktop SVG), the plan and ledger parsers, formatting |
 | [`types/index.d.ts`](types/index.d.ts) | The mod's state contract |
 | [`tests/`](tests) | Behaviour tests, run with `claude plugin test` |

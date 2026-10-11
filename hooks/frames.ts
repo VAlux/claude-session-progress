@@ -178,7 +178,7 @@ export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`
 }
 
-function basename(path: string): string {
+export function basename(path: string): string {
   const parts = path.split('/')
   return parts[parts.length - 1] || path
 }
