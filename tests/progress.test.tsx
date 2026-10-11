@@ -79,7 +79,8 @@ test('a long planned turn shows progress, then a summary, then hides on the next
   await clock.advance(2_000) // the bar and its label fill to 100% as the finish plays
   expect(await shows($, false, /Task complete/), 'shows /Task complete/ (working=false)').toBe(true)
   expect(await shows($, false, /100%/), 'shows /100%/ (working=false)').toBe(true)
-  expect(await shows($, false, /1m 35s/), 'shows /1m 35s/ (working=false)').toBe(true)
+  expect(await shows($, false, /1m 35s/), 'the turn time is the engine\'s closing line, not repeated').toBe(false)
+  expect(await shows($, false, /session/), 'one turn has no session total apart from it').toBe(false)
 
   await $.turn.start({ text: 'thanks', turnId: 't2' })
   expect(await shows($, true, /Task complete/), 'shows /Task complete/ (working=true)').toBe(false)
@@ -179,4 +180,23 @@ test('an indeterminate bar carries no clock of its own: the head row already sho
   await ui.unmount()
   expect(clocks.length, 'the head row shows the clock').toBeGreaterThan(0)
   expect(rasterText(String(bar?.props.cells)), 'the bar does not repeat it').not.toMatch(/\d+s/)
+})
+
+test('after several turns the summary carries one session line, with its total time, and no turn timer', async ($, on) => {
+  engineBottom(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  for (const [turnId, ms] of [['t1', 95_000], ['t2', 30_000]] as const) {
+    await $.turn.start({ text: 'investigate', turnId })
+    for (const command of ['ls', 'git status', 'npm test']) await $.tool.call({ tool: 'Bash', command })
+    await clock.advance(21_000)
+    await $.turn.complete(done(turnId, ms))
+    await clock.advance(2_000)
+  }
+  const ui = await band($, false)
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  await ui.unmount()
+  const sessions = texts.filter(t => /session/.test(t))
+  expect(sessions.length, 'one session line').toBe(1)
+  expect(sessions[0]).toMatch(/2 turns · 2m 05s/)
+  expect(texts.some(t => /\b30s\b/.test(t)), 'the last turn\'s time is not repeated').toBe(false)
 })

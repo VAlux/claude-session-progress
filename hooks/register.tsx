@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { Elements, EngineInterface, Register, Timer } from 'claude-code'
 
 import type { AgentRun, Live, PlanFile, PlanTask, Summary, Task, TaskStatus, Totals } from '../types'
 import {
@@ -9,6 +9,8 @@ import {
   WARN,
   activityLabel,
   barCells,
+  barSvg,
+  hex,
   MUTED,
   pctLabel,
   duration,
@@ -20,6 +22,7 @@ import {
   plural,
   shortToolName,
   spinnerCells,
+  spinnerSvg,
   tokens,
   type Palette,
 } from './frames'
@@ -77,6 +80,54 @@ function taskListLine(tools: readonly string[]): string | null {
 }
 
 type Dollar = EngineInterface
+
+type BarLook = { shimmer: boolean; label: string; labelColor: number }
+
+/** What draws the band's spinner, marks and bar on one surface; the rows around them are the same on both. */
+type Marks = {
+  /** A row's width: the terminal lays the band out in cells, the desktop to its page. */
+  rowWidth: number | string
+  spinner(key: string, palette: Palette, t: number): JSX.Element
+  mark(key: string, glyph: string, palette: Palette): JSX.Element
+  bar(key: string, columns: number, progress: number | null, t: number, palette: Palette, look: BarLook): JSX.Element
+}
+
+/** Raster cells, which the frame loop repaints between redraws by their keys. */
+function terminalMarks({ Raster }: Elements['terminal'], width: number): Marks {
+  return {
+    rowWidth: width,
+    spinner: (key, palette, t) => <Raster key={key} columns={1} rows={1} cells={spinnerCells(t, palette)} />,
+    mark: (key, glyph, palette) => <Raster key={key} columns={1} rows={1} cells={glyphCells(glyph, palette.base)} />,
+    bar: (key, columns, progress, t, palette, look) => (
+      <Raster key={key} columns={columns} rows={1} cells={barCells(columns, progress, t, palette, look)} />
+    ),
+  }
+}
+
+/** SVG that animates itself: the desktop takes no blits, so nothing repaints it between redraws. */
+function desktopMarks({ Box, Text, Svg }: Elements['desktop']): Marks {
+  return {
+    rowWidth: '100%',
+    spinner: (key, palette) => <Svg key={key} source={spinnerSvg(palette)} alt="Working" width={12} height={12} isInteractive />,
+    mark: (key, glyph, palette) => (
+      <Text key={key} bold color={hex(palette.base)}>
+        {glyph}
+      </Text>
+    ),
+    bar: (key, _columns, progress, _t, palette, { shimmer, label, labelColor }) => {
+      const { source, isAnimated } = barSvg(progress, palette, { shimmer })
+      const pct = label.trim()
+      return (
+        <Box flexDirection="row" flexGrow={1} alignItems="center" gap={1}>
+          <Box flexGrow={1}>
+            <Svg key={key} source={source} alt={pct === '' ? 'Progress: working' : `Progress: ${pct}`} height={6} isInteractive={isAnimated} />
+          </Box>
+          {pct !== '' && <Text color={hex(labelColor)}>{pct}</Text>}
+        </Box>
+      )
+    },
+  }
+}
 
 // What the frame loop paints between redraws. Module state: a reload refills it on the next draw.
 const scene = {
@@ -575,12 +626,14 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    // The animated Raster bar is the terminal's alone.
-    if (e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
+    // The band is raised on the terminal and the desktop alone.
+    if ((e.surface !== 'terminal' && e.surface !== 'desktop') || e.props.hasSurvey) return next(e)
 
     await read($, tick) // redraw each second for the clock
-    const { Box, Text, Raster } = $.ui.resolve(e)
+    const { Box, Text } = $.ui.resolve(e)
     const width = Math.max(20, e.props.bodyColumns)
+    const isTerminal = e.surface === 'terminal'
+    const marks = e.surface === 'terminal' ? terminalMarks($.ui.resolve(e), width) : desktopMarks($.ui.resolve(e))
 
     /** Up to `room` rows of a step list, keeping the active step in view, then a `+N more` row. */
     const stepRowsOf = (list: readonly Task[], room: number) => {
@@ -642,9 +695,9 @@ export const register: Register = (on, options) => {
       const mark = !isDone ? null : run.reason === 'answer' ? '✓' : run.reason === 'aborted' ? '■' : '✗'
 
       const rows = [
-        <Box key="head-row" flexDirection="row" justifyContent="space-between" width={width}>
+        <Box key="head-row" flexDirection="row" justifyContent="space-between" width={marks.rowWidth}>
           <Box flexDirection="row" flexShrink={1}>
-            <Raster key={AGENT_SPINNER_KEY} columns={1} rows={1} cells={mark === null ? spinnerCells(t, palette) : glyphCells(mark, palette.base)} />
+            {mark === null ? marks.spinner(AGENT_SPINNER_KEY, palette, t) : marks.mark(AGENT_SPINNER_KEY, mark, palette)}
             <Text bold color={color} wrap="truncate-end">
               {' '}
               {headline}
@@ -655,13 +708,8 @@ export const register: Register = (on, options) => {
             {duration(elapsed)}
           </Text>
         </Box>,
-        <Box key="bar-row" flexDirection="row" width={width} flexShrink={0}>
-          <Raster
-            key={AGENT_BAR_KEY}
-            columns={barWidth}
-            rows={1}
-            cells={barCells(barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor: progress === null ? MUTED : palette.base })}
-          />
+        <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
+          {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor: progress === null ? MUTED : palette.base })}
         </Box>,
         <Text key="stats" dimColor wrap="truncate-end">
           {stats.join('  ·  ')}
@@ -707,22 +755,22 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const t = Date.now()
 
-    scene.requestId = e.requestId
+    // The frame loop paints the terminal's band alone; the desktop's draws are whole each time.
+    if (isTerminal) scene.requestId = e.requestId
+    const barWidth = Math.max(12, width - BAR_SLACK)
 
     if (showLive) {
       const progress = steps.progress
-      // A last live draw can land after the turn ended: it must not repaint the finish orange.
-      if (!scene.isFinishing) {
-        scene.target = progress
-        scene.palette = ACCENT
-      }
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
       const label = progress === null ? '' : pctLabel(progress)
-      if (!scene.isFinishing) {
+      // A last live draw can land after the turn ended: it must not repaint the finish orange.
+      if (isTerminal && !scene.isFinishing) {
+        scene.target = progress
+        scene.palette = ACCENT
         scene.showPct = progress !== null
         scene.label = label
       }
-      scene.barWidth = Math.max(12, width - BAR_SLACK)
+      if (isTerminal) scene.barWidth = barWidth
 
       const current = plan.find(task => task.status === 'in_progress')
       const headline = current?.activeForm ?? current?.subject ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking'
@@ -737,9 +785,9 @@ export const register: Register = (on, options) => {
       ].filter(Boolean)
 
       const rows = [
-        <Box key="head-row" flexDirection="row" justifyContent="space-between" width={width}>
+        <Box key="head-row" flexDirection="row" justifyContent="space-between" width={marks.rowWidth}>
           <Box flexDirection="row" flexShrink={1}>
-            <Raster key={SPINNER_KEY} columns={1} rows={1} cells={spinnerCells(t, ACCENT)} />
+            {marks.spinner(SPINNER_KEY, ACCENT, t)}
             <Text bold color="claude" wrap="truncate-end">
               {' '}
               {headline}
@@ -752,16 +800,12 @@ export const register: Register = (on, options) => {
           </Text>
         </Box>,
         // A fixed width, as the head row has: in a band laid out narrower than bodyColumns the bar would be squeezed and its last cells wrap.
-        <Box key="bar-row" flexDirection="row" width={width} flexShrink={0}>
-          <Raster
-            key={BAR_KEY}
-            columns={scene.barWidth}
-            rows={1}
-            cells={barCells(scene.barWidth, progress === null ? null : scene.shown, t, ACCENT, {
-              label,
-              labelColor: progress === null ? MUTED : ACCENT.base,
-            })}
-          />
+        <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
+          {marks.bar(BAR_KEY, barWidth, progress === null ? null : isTerminal ? scene.shown : progress, t, ACCENT, {
+            shimmer: true,
+            label,
+            labelColor: progress === null ? MUTED : ACCENT.base,
+          })}
         </Box>,
         <Text key="stats" dimColor wrap="truncate-end">
           {stats.join('  ·  ')}
@@ -812,12 +856,16 @@ export const register: Register = (on, options) => {
               : 'Ended with an error'
     const planned = sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null
     const finalProgress = sum.reason === 'answer' && waiting === 0 ? 1 : planned
-    scene.barWidth = Math.max(12, width - BAR_SLACK)
+    // The finish eases in on the terminal's frame loop; the desktop draws where it lands.
+    const isEasing = isTerminal && scene.isFinishing
     // Waiting with no plan to measure, the bar sweeps rather than settle on a number it does not have.
-    const barProgress = waiting > 0 && planned === null ? null : scene.isFinishing ? scene.shown : (finalProgress ?? 0)
-    scene.palette = palette
-    scene.showPct = finalProgress !== null
-    scene.label = ''
+    const barProgress = waiting > 0 && planned === null ? null : isEasing ? scene.shown : (finalProgress ?? 0)
+    if (isTerminal) {
+      scene.barWidth = barWidth
+      scene.palette = palette
+      scene.showPct = finalProgress !== null
+      scene.label = ''
+    }
     const label = finalProgress === null || barProgress === null ? '' : pctLabel(barProgress)
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0
 
@@ -835,26 +883,18 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {below}
-        <Box key="head-row" flexDirection="row" justifyContent="space-between" width={width}>
+        <Box key="head-row" flexDirection="row" justifyContent="space-between" width={marks.rowWidth}>
           <Box flexDirection="row" flexShrink={1}>
-            <Raster key={SPINNER_KEY} columns={1} rows={1} cells={glyphCells(mark, palette.base)} />
+            {marks.mark(SPINNER_KEY, mark, palette)}
+            {/* No turn time: the engine's closing line (`Brewed for 5m 59s`) or the desktop's footer already says it. */}
             <Text bold color={color}>
               {' '}
               {title}
             </Text>
-            <Text dimColor>{waiting > 0 ? ` · the turn took ${duration(sum.durationMs)}` : ` in ${duration(sum.durationMs)}`}</Text>
           </Box>
-          <Text dimColor>
-            session: {plural(total.turns, 'turn')} · {duration(total.totalMs)}
-          </Text>
         </Box>
-        <Box key="bar-row" flexDirection="row" width={width} flexShrink={0}>
-          <Raster
-            key={BAR_KEY}
-            columns={scene.barWidth}
-            rows={1}
-            cells={barCells(scene.barWidth, barProgress, t, palette, { shimmer: scene.isFinishing, label })}
-          />
+        <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
+          {marks.bar(BAR_KEY, barWidth, barProgress, t, palette, { shimmer: isEasing, label, labelColor: palette.base })}
         </Box>
         <Text key="work" dimColor wrap="truncate-end">
           {work.join('  ·  ')}
@@ -862,11 +902,17 @@ export const register: Register = (on, options) => {
         <Text key="tokens" dimColor wrap="truncate-end">
           {tokens(sum.tokensIn)} in ({cachePct}% cached) · {tokens(sum.tokensOut)} out
           {sum.model ? ` · ${sum.model}` : ''}
-          {total.turns > 1 ? `  ·  session ${tokens(total.tokensIn)} in · ${tokens(total.tokensOut)} out · ${total.toolCalls} calls` : ''}
         </Text>
         {sum.topTools.length > 0 && (
           <Text key="tools" dimColor wrap="truncate-end">
             {sum.topTools.map(([tool, n]) => `${tool} ${n}`).join('  ')}
+          </Text>
+        )}
+        {/* After one turn the session's totals are that turn's. */}
+        {total.turns > 1 && (
+          <Text key="session" dimColor wrap="truncate-end">
+            session: {plural(total.turns, 'turn')} · {duration(total.totalMs)} · {tokens(total.tokensIn)} in · {tokens(total.tokensOut)} out ·{' '}
+            {plural(total.toolCalls, 'call')}
           </Text>
         )}
       </Box>

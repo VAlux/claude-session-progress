@@ -1,4 +1,4 @@
-// Pure drawing helpers: Raster cells for the bar and spinner, and text formatting.
+// Pure drawing helpers: Raster cells (terminal) and SVG markup (desktop) for the bar and spinner, and text formatting.
 
 import type { PlanTask } from '../types'
 
@@ -112,6 +112,52 @@ export function spinnerCells(t: number, palette: Palette): string {
 
 export function glyphCells(char: string, color: number): string {
   return encode(Uint32Array.of(char.charCodeAt(0), color, DEFAULT_BG))
+}
+
+// The desktop's bar and spinner: SVG markup the page draws as an image, or in a frame when it animates.
+// Nothing in it depends on the clock, so the band's once-a-second redraw leaves an animation running.
+
+export const hex = (color: number) => `#${(color & 0xffffff).toString(16).padStart(6, '0')}`
+
+const SVG_W = 1000
+const SVG_H = 6
+const SVG_TRACK = '<rect width="1000" height="6" rx="3" fill="#8c8c8c" fill-opacity="0.3"/>'
+
+/** The bar as SVG, stretched to its row: `progress` in [0, 1], or null for a comet sweeping the track. */
+export function barSvg(progress: number | null, palette: Palette, options: { shimmer?: boolean } = {}): { source: string; isAnimated: boolean } {
+  const open = `<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_W}" height="${SVG_H}" viewBox="0 0 ${SVG_W} ${SVG_H}" preserveAspectRatio="none">`
+  if (progress === null) {
+    const tail = 200
+    const comet =
+      `<defs><linearGradient id="c"><stop offset="0" stop-color="${hex(palette.base)}" stop-opacity="0"/>` +
+      `<stop offset="0.85" stop-color="${hex(palette.base)}"/><stop offset="1" stop-color="${hex(palette.glow)}"/></linearGradient></defs>` +
+      `<rect x="${-tail}" width="${tail}" height="6" rx="3" fill="url(#c)">` +
+      `<animate attributeName="x" from="${-tail}" to="${SVG_W}" dur="2.2s" repeatCount="indefinite"/></rect>`
+    return { source: `${open}${SVG_TRACK}${comet}</svg>`, isAnimated: true }
+  }
+  const fill = Math.round(Math.max(0, Math.min(1, progress)) * SVG_W)
+  const bar =
+    `<defs><linearGradient id="f"><stop offset="0" stop-color="${hex(palette.dim)}"/><stop offset="1" stop-color="${hex(palette.base)}"/></linearGradient>` +
+    `<clipPath id="k"><rect width="${fill}" height="6" rx="3"/></clipPath></defs>` +
+    `<rect width="${fill}" height="6" rx="3" fill="url(#f)"/>`
+  const isAnimated = options.shimmer === true && fill > 0
+  const shimmer = isAnimated
+    ? `<defs><linearGradient id="s"><stop offset="0" stop-color="${hex(palette.glow)}" stop-opacity="0"/>` +
+      `<stop offset="0.5" stop-color="${hex(palette.glow)}" stop-opacity="0.85"/><stop offset="1" stop-color="${hex(palette.glow)}" stop-opacity="0"/></linearGradient></defs>` +
+      `<g clip-path="url(#k)"><rect x="-120" width="120" height="6" fill="url(#s)">` +
+      `<animate attributeName="x" from="-120" to="${fill}" dur="2.6s" repeatCount="indefinite"/></rect></g>`
+    : ''
+  return { source: `${open}${SVG_TRACK}${bar}${shimmer}</svg>`, isAnimated }
+}
+
+/** The desktop's live spinner: an arc turning on its own. */
+export function spinnerSvg(palette: Palette): string {
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">' +
+    `<circle cx="6" cy="6" r="4.5" fill="none" stroke="${hex(palette.base)}" stroke-opacity="0.25" stroke-width="2"/>` +
+    `<path d="M6 1.5 A4.5 4.5 0 0 1 10.5 6" fill="none" stroke="${hex(palette.base)}" stroke-width="2" stroke-linecap="round">` +
+    '<animateTransform attributeName="transform" type="rotate" from="0 6 6" to="360 6 6" dur="0.9s" repeatCount="indefinite"/></path></svg>'
+  )
 }
 
 export function duration(ms: number): string {

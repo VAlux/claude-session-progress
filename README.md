@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-4eba65)](LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Surface: terminal](https://img.shields.io/badge/surface-terminal-5c5c5c)](#good-to-know)
+[![Surfaces: terminal, desktop](https://img.shields.io/badge/surfaces-terminal%20%7C%20desktop-5c5c5c)](#good-to-know)
 
 <img src="docs/demo.gif" alt="session-progress following a six-step plan in Claude Code, then showing the completion summary" width="900">
 
@@ -22,6 +22,8 @@ At the prompt of a Claude Code terminal session:
 
 Answer `y` to add the marketplace, then pick a scope. The user scope loads it in every session. It starts working in the current session right away.
 
+The desktop app's Code tab has no `/plugin` command. Install it from a terminal at the user scope, and the local sessions the desktop app starts load it too.
+
 ## What it shows
 
 | | |
@@ -30,7 +32,7 @@ Answer `y` to add the marketplace, then pick a scope. The user scope loads it in
 | **When the steps are known** | The bar shows real progress, and the headline names the step in progress. A plan file's steps are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
 | **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*, and its bar stays where the plan is instead of filling. |
 | **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
-| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists duration, work done, tokens in and out with the cache share, the model, the most-used tools, and totals for the session. |
+| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the model and the most-used tools, and, from the second turn on, one line of totals for the session. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
 | **On your next prompt** | The summary goes away. |
 
 ## How progress is measured
@@ -70,7 +72,7 @@ To make the band your only task view, hide Claude Code's own list with `ctrl+t` 
 
 ## Good to know
 
-- It draws in the terminal only. Other surfaces show nothing extra.
+- It draws in the terminal and in the desktop app. On the desktop the bar and spinner are vector drawings that animate themselves, and the finish lands at once instead of easing in. The VS Code extension and the mobile app have no band above the prompt, so they show nothing extra.
 - Collapse the band at any time with `ctrl+x ctrl+a`, or with the `[-]` mark at its right edge.
 - A bug in the mod never blocks a tool call: its tool hook passes the call through if it fails.
 - It shares the space above the prompt: another mod's band there (factory-floor's strip, say) is drawn above it, not hidden.
@@ -88,7 +90,7 @@ claude plugin test ./claude-session-progress
 | Path | What it holds |
 | --- | --- |
 | [`hooks/register.tsx`](hooks/register.tsx) | The hooks: turn and tool tracking, plan files, the system-prompt line, the band |
-| [`hooks/frames.ts`](hooks/frames.ts) | Bar and spinner frames, the plan and ledger parsers, formatting |
+| [`hooks/frames.ts`](hooks/frames.ts) | Bar and spinner frames (terminal cells, desktop SVG), the plan and ledger parsers, formatting |
 | [`types/index.d.ts`](types/index.d.ts) | The mod's state contract |
 | [`tests/`](tests) | Behaviour tests, run with `claude plugin test` |
 
