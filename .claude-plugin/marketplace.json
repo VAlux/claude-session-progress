@@ -2,7 +2,7 @@
   "name": "claude-session-progress",
   "description": "An animated progress band and completion summary for long-running Claude Code tasks",
   "owner": {
-    "name": "Oleksandr Voievodin"
+    "name": "Alvo"
   },
   "plugins": [
     {

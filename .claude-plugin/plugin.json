@@ -3,7 +3,7 @@
   "version": "0.1.7",
   "description": "Animated progress band for long-running turns, with a completion summary",
   "author": {
-    "name": "Oleksandr Voievodin"
+    "name": "Alvo"
   },
   "repository": "https://github.com/VAlux/claude-session-progress",
   "license": "MIT",
