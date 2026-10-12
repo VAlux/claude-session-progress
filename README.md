@@ -8,7 +8,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Surfaces: terminal, desktop](https://img.shields.io/badge/surfaces-terminal%20%7C%20desktop-5c5c5c)](#good-to-know)
 
-<img src="docs/demo.gif" alt="session-progress following a six-step plan in Claude Code, then showing the completion summary" width="900">
+<img src="docs/demo.gif" alt="session-progress following a six-step plan in Claude Code, then showing its details, the cost and the session total" width="900">
 
 </div>
 
@@ -28,12 +28,12 @@ The desktop app's Code tab has no `/plugin` command. Install it from a terminal 
 
 | | |
 | --- | --- |
-| **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts, each with its own icon: ⚒ tool calls, ⑂ subagents, ✎ files changed with the lines added and removed, ⌕ files read, ↻ model steps, ⇅ tokens and ⚠ errors. Below them, what is running right now. |
+| **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts, each with its own icon: ⚒ tool calls, ⑂ subagents, ✎ files changed with the lines added and removed, ⌕ files read, ↻ model steps, ⇅ tokens with their estimated cost in USD, and ⚠ errors. Below them, what is running right now. |
 | **When you click a count** | Its details open under the row (see [Details](#details)). Click it again to close them. |
 | **When the steps are known** | The bar shows real progress, and the headline names the step in progress. A plan file's steps are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
 | **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*, and its bar stays where the plan is instead of filling. |
 | **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
-| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the model and the most-used tools, and, from the second turn on, one line of totals for the session. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
+| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the estimated cost of the task in USD, the model and the most-used tools, and, from the second turn on, one line of totals for the session, cost included. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
 | **On your next prompt** | The summary goes away. |
 
 ## Details
@@ -47,7 +47,7 @@ Each count under the bar is a button. Click it, or focus the band with `ctrl+x t
 | ✎ files | Each file changed, by name, with the lines added and removed (`a.ts  +12 −3`). Two files with one name show their folder too |
 | ⌕ read | The files read, side by side |
 | ↻ steps | Time spent in the model and in tools, then each model request: the tools it called, its tokens and its time |
-| ⇅ tokens | Input split into fresh, cache read and cache write, output per step, the context at the last step, and the model |
+| ⇅ tokens | The estimated cost, input split into fresh, cache read and cache write, output per step, the context at the last step, and the model |
 | ⚠ errors | Each failed call, a subagent's marked with ⑂, and why it failed |
 | ☰ tasks | In the summary: the task list or plan steps, with ✓ ◐ ○ |
 
@@ -91,6 +91,7 @@ To make the band your only task view, hide Claude Code's own list with `ctrl+t` 
 ## Good to know
 
 - It draws in the terminal and in the desktop app. On the desktop the bar and spinner are vector drawings that animate themselves, and the finish lands at once instead of easing in. The VS Code extension and the mobile app have no band above the prompt, so they show nothing extra.
+- Costs are estimates: each model step's tokens at Anthropic's list prices (the table at the top of [`hooks/frames.ts`](hooks/frames.ts)), subagents included. A model missing from the table adds nothing, and a plan's discount or a different provider's rate is not reflected.
 - Collapse the band at any time with `ctrl+x ctrl+a`, or with the `[-]` mark at its right edge.
 - A bug in the mod never blocks a tool call: its tool hook passes the call through if it fails.
 - It shares the space above the prompt: another mod's band there (factory-floor's strip, say) is drawn above it, not hidden.

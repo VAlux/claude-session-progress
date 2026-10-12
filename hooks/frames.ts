@@ -174,6 +174,41 @@ export function tokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`
 }
 
+/** USD per million tokens: fresh input, output, cache read. Cache writes bill at 1.25x input. */
+const PRICES: [prefix: string, input: number, output: number, cacheRead: number][] = [
+  ['claude-fable-5', 10, 50, 0.25],
+  ['claude-mythos-5', 10, 50, 0.25],
+  ['claude-opus-5-5', 4, 20, 0.2],
+  ['claude-opus-5', 5, 25, 0.5],
+  ['claude-opus-4', 5, 25, 0.5],
+  ['claude-sonnet-5', 2, 10, 0.2],
+  ['claude-sonnet-4', 3, 15, 0.3],
+  ['claude-haiku-5', 0.1, 0.5, 0.01],
+  ['claude-haiku-4', 1, 5, 0.1],
+]
+
+export type StepUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+
+/** What one model request costs, from list prices. 0 for a model the table does not know. */
+export function stepCost(model: string | null | undefined, usage: StepUsage | null | undefined): number {
+  if (!model || !usage) return 0
+  const price = PRICES.find(([prefix]) => model.startsWith(prefix))
+  if (!price) return 0
+  const [, input, output, cacheRead] = price
+  return (
+    (usage.input_tokens * input +
+      usage.cache_creation_input_tokens * input * 1.25 +
+      usage.cache_read_input_tokens * cacheRead +
+      usage.output_tokens * output) /
+    1_000_000
+  )
+}
+
+export function usd(n: number): string {
+  if (n < 0.005) return '<$0.01'
+  return `$${n < 10 ? n.toFixed(2) : n.toFixed(1)}`
+}
+
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`
 }

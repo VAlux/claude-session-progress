@@ -39,7 +39,9 @@ import {
   shortToolName,
   spinnerCells,
   spinnerSvg,
+  stepCost,
   tokens,
+  usd,
   type Palette,
 } from './frames'
 
@@ -181,6 +183,7 @@ function freshLive(turnId: string, startedAt: number): Live {
     tokensCached: 0,
     tokensCacheWrite: 0,
     tokensOut: 0,
+    cost: 0,
     model: null,
     detail: emptyDetail(),
   }
@@ -512,6 +515,7 @@ export const register: Register = (on, options) => {
         tokensCached: l.tokensCached + (usage?.cache_read_input_tokens ?? 0),
         tokensCacheWrite: (l.tokensCacheWrite ?? 0) + (usage?.cache_creation_input_tokens ?? 0),
         tokensOut: l.tokensOut + stepOut,
+        cost: (l.cost ?? 0) + stepCost(usage?.model ?? e.model, usage),
         model: e.agentId === undefined ? (usage?.model ?? e.model) : l.model,
         detail: e.agentId === undefined ? withStep(detailOf(l), step) : l.detail,
       }
@@ -647,6 +651,7 @@ export const register: Register = (on, options) => {
         toolCalls: t.toolCalls + l.toolCalls + l.subagentToolCalls,
         tokensIn: t.tokensIn + tokensIn,
         tokensOut: t.tokensOut + tokensOut,
+        cost: (t.cost ?? 0) + (l.cost ?? 0),
       }))
 
       if (l.isLong) {
@@ -670,6 +675,7 @@ export const register: Register = (on, options) => {
           tokensCached: Math.max(l.tokensCached, usage?.cache_read_input_tokens ?? 0),
           tokensCacheWrite: Math.max(l.tokensCacheWrite ?? 0, usage?.cache_creation_input_tokens ?? 0),
           tokensOut,
+          cost: l.cost ?? 0,
           model: usage?.model ?? l.model,
           detail: detailOf(l),
         }
@@ -913,7 +919,7 @@ export const register: Register = (on, options) => {
         detail.files.length > 0 && filesStat(detail),
         detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
         stat('steps', plural(l.steps, 'step')),
-        l.tokensOut > 0 && stat('tokens', `${tokens(l.tokensIn)}↑ ${tokens(l.tokensOut)}↓`),
+        l.tokensOut > 0 && stat('tokens', `${tokens(l.tokensIn)}↑ ${tokens(l.tokensOut)}↓${(l.cost ?? 0) > 0 ? ` · ${usd(l.cost ?? 0)}` : ''}`),
         l.errors > 0 && stat('errors', plural(l.errors, 'error'), 'error'),
       ]
       const src: DetailSource = {
@@ -1024,7 +1030,7 @@ export const register: Register = (on, options) => {
         stat('tasks', `${sum.tasksDone}/${sum.tasksTotal} ${sum.stepsUnit} done${sum.stepsSource !== null ? ` (${sum.stepsSource})` : ''}`),
       sum.errors > 0 && stat('errors', plural(sum.errors, 'failed call'), 'error'),
     ]
-    const usage = [stat('tokens', `${tokens(sum.tokensIn)} in (${cachePct}% cached) · ${tokens(sum.tokensOut)} out${sum.model ? ` · ${sum.model}` : ''}`)]
+    const usage = [stat('tokens', `${tokens(sum.tokensIn)} in (${cachePct}% cached) · ${tokens(sum.tokensOut)} out${(sum.cost ?? 0) > 0 ? ` · ${usd(sum.cost ?? 0)} this task` : ''}${sum.model ? ` · ${sum.model}` : ''}`)]
     const src: DetailSource = {
       detail,
       agents: await read($, agents),
@@ -1070,6 +1076,7 @@ export const register: Register = (on, options) => {
         {total.turns > 1 && (
           <Text key="session" dimColor wrap="truncate-end">
             Σ session: {plural(total.turns, 'turn')} · {duration(total.totalMs)} · {tokens(total.tokensIn)} in · {tokens(total.tokensOut)} out ·{' '}
+            {(total.cost ?? 0) > 0 ? `${usd(total.cost ?? 0)} · ` : ''}
             {plural(total.toolCalls, 'call')}
           </Text>
         )}

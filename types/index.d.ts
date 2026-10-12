@@ -63,6 +63,8 @@ export type Live = {
   /** Absent on a turn kept from before it existed. */
   tokensCacheWrite?: number
   tokensOut: number
+  /** Estimated USD at list prices. Absent on a turn kept from before it existed. */
+  cost?: number
   model: string | null
   /** Absent on a turn kept from before it existed. */
   detail?: Detail
@@ -86,6 +88,8 @@ export type Summary = {
   tokensCached: number
   tokensCacheWrite?: number
   tokensOut: number
+  /** Estimated USD at list prices. */
+  cost?: number
   model: string | null
   /** The finished turn's details, which its stats still open onto. */
   detail?: Detail
@@ -118,7 +122,7 @@ export type AgentRun = {
   tasks: Task[]
 }
 
-export type Totals = { turns: number; longTurns: number; totalMs: number; toolCalls: number; tokensIn: number; tokensOut: number }
+export type Totals = { turns: number; longTurns: number; totalMs: number; toolCalls: number; tokensIn: number; tokensOut: number; cost?: number }
 
 declare module 'claude-code' {
   interface PluginState {
