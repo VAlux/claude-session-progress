@@ -29,7 +29,7 @@
     "eta": {
       "type": "string",
       "title": "Countdown",
-      "description": "Whether the band counts down the work left. on: Claude reports what is left through the mod's progress tool, and the bar's label counts it down. off: no tool, no countdown; the bar shows the share of a plan done, as before.",
+      "description": "Whether the band counts down the work left. on: Claude reports what is left through the mod's progress tool, and the bar's label counts it down. off: no tool, no countdown; the bar shows the share of a task list or plan done, as before.",
       "default": "on",
       "options": [
         "on",

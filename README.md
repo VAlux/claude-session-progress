@@ -32,9 +32,9 @@ The desktop app's Code tab has no `/plugin` command. Install it from a terminal 
 | **When you click a count** | Its details open under the row (see [Details](#details)). Click it again to close them. |
 | **When the steps are known** | The headline names the step in progress, and the bar moves toward the end as the countdown runs down. A plan file's steps, and the items Claude reports, are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
 | **How long is left** | Once Claude has said what is left, the bar's label counts it down: `~4m left (3–6m)`, then `~1m 30s left`, then `a few seconds left`. It turns amber with `↑` for a few seconds when the estimate grows, and the bar itself never moves back. See [How long is left](#how-long-is-left). |
-| **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*. Its bar goes on with their countdown, or sweeps when they have none, instead of filling. |
+| **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*. Its bar goes on with their countdown instead of filling, and waits where it is while one of them has none. |
 | **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list or report, its countdown and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
-| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the estimated cost of the task in USD, the model and the most-used tools, how the first estimate compared with what followed (`⏱ at 1m 20s: estimated ~6m more (3–9m) · took 6m 20s more`), and, from the second turn on, one line of totals for the session, cost included. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
+| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the estimated cost of the task in USD, the model and the most-used tools, how the first estimate compared with what followed (`⏱ at 1m 20s: estimated ~6m more (3–9m) · took 6m 20s more`, when the turn had a countdown and ended with nothing left running), and, from the second turn on, one line of totals for the session, cost included. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
 | **On your next prompt** | The summary goes away. |
 
 ## Details
@@ -72,13 +72,13 @@ The mod adds two lines to the system prompt: one asking Claude to keep a task li
 
 ## How long is left
 
-Each item is worked out in rounds (a model request and the tools it ran), from how many rounds items of its size took in your past turns, times how long this turn's rounds take. History stores rounds, not seconds, so a slower model or a higher effort changes the pace, not the history. A `run` item's estimate is that command's own measured time in this project: the band times every Bash call. As the turn goes, how its finished items compared with their estimates corrects the rest.
+Each item is worked out in rounds (a model request and the tools it ran), from how many rounds items of its size took in your past turns (built-in guesses until there are some), times how long this turn's rounds take. History stores rounds, not seconds, so a slower model or a higher effort changes the pace, not the history. A `run` item's estimate is that command's own measured time in this project: the band times every foreground Bash call. As the turn goes, how its finished items compared with their estimates corrects the rest.
 
 The range, `(3–6m)`, comes from how much those past times varied. It narrows as items finish. The bar moves at the speed that reaches the end with the countdown, slows when the work grows, and waits at 97% until the turn ends.
 
-There is no countdown before Claude's first report, while the turn waits on a subagent that has not reported, and once an item runs far past its range with no report for several rounds.
+There is no countdown before Claude has said what is left — a report, a task list or a plan — while the turn waits on a subagent that has none, once Claude reports nothing left yet keeps working, and once an item runs past its range with no report for several rounds.
 
-What it learns is kept in the mod's own store, a JSON file under your Claude Code configuration directory: samples per size, the last 10 runs of each command per project, and each turn's first estimate against what followed (the last 200), which is how its accuracy can be judged on your own turns. Each report is a tool call Claude makes alongside its others: tens of output tokens, and no extra model request. Its rows are hidden from the transcript.
+What it learns is kept in the mod's own store, a JSON file under your Claude Code configuration directory: samples per size, the last 10 run times of each command per project, kept by a hash of the command rather than its text, and each turn's first estimate against what followed (the last 200), which is how its accuracy can be judged on your own turns. Each report is a tool call Claude makes alongside its others: tens of output tokens, and no extra model request. The tool's definition also adds a few hundred input tokens to each request, and a report Claude sends on its own costs a round. Its rows are hidden from the transcript.
 
 ## When it appears
 
@@ -87,7 +87,7 @@ Quick answers and short Q&A never show the band. It appears once a turn has run:
 | | |
 | --- | --- |
 | 20 s, with at least 3 tool calls | ordinary multi-step work |
-| 8 s, with a task list or plan of 2+ steps | planned work, which shows sooner |
+| 8 s, with a task list, plan or report of 2+ steps | planned work, which shows sooner |
 | 45 s | anything that runs long |
 
 The thresholds are the constants at the top of [`hooks/register.tsx`](hooks/register.tsx).
@@ -99,7 +99,7 @@ Change it in `/config`, or with `claude plugin configure session-progress`.
 | Setting | Values | What it does |
 | --- | --- | --- |
 | `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's steps and the items Claude reports, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
-| `eta` | **`on`**, `off` | Whether the band counts down the work left. `off` registers no tool, adds no prompt line, records nothing, and the bar shows the share of a plan done, as before 0.2.0. |
+| `eta` | **`on`**, `off` | Whether the band counts down the work left. `off` registers no tool, adds no prompt line, records nothing, and the bar shows the share of a task list or plan done, as before 0.2.0. |
 
 To make the band your only task view, hide Claude Code's own list with `ctrl+t` and set `stepRows` to `always`.
 
@@ -125,7 +125,7 @@ claude plugin test ./claude-session-progress
 
 | Path | What it holds |
 | --- | --- |
-| [`hooks/register.tsx`](hooks/register.tsx) | The hooks: turn and tool tracking, plan files, the system-prompt line, the band |
+| [`hooks/register.tsx`](hooks/register.tsx) | The hooks: turn and tool tracking, plan files, the system-prompt lines, the band |
 | [`hooks/details.ts`](hooks/details.ts) | What each count opens onto: the per-call, per-file and per-step records, line counting, and the detail rows |
 | [`hooks/eta.ts`](hooks/eta.ts) | The countdown: pace, each item's spread, the total, the fill, and what a loop learns |
 | [`hooks/report.ts`](hooks/report.ts) | The `progress` tool, its prompt line, and reading reports into a work list |
