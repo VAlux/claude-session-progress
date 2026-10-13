@@ -60,6 +60,7 @@ const totals = atom({ plugin: 'session-progress', key: 'totals' } as const, {
 const tick = atom({ plugin: 'session-progress', key: 'tick' } as const, 0)
 const agents = atom({ plugin: 'session-progress', key: 'agents' } as const, [])
 const openStat = atom({ plugin: 'session-progress', key: 'openStat' } as const, null)
+const showAll = atom({ plugin: 'session-progress', key: 'showAll' } as const, false)
 
 // When a turn earns the band: a quick answer or a short Q/A never does.
 const SHOW_AFTER_MS = 20_000
@@ -703,6 +704,7 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, e.props.bodyColumns)
     const opened = await read($, openStat)
+    const isAll = await read($, showAll)
     const isTerminal = e.surface === 'terminal'
     const marks = e.surface === 'terminal' ? terminalMarks($.ui.resolve(e), width) : desktopMarks($.ui.resolve(e))
 
@@ -743,7 +745,10 @@ export const register: Register = (on, options) => {
       if (isOpen) parts.push(' ▾')
       return (
         <Box key={`stat-box-${stat.kind}`} flexShrink={0}>
-          <Button key={`stat-${stat.kind}`} plain dimColor={!isOpen} onPress={() => void update($, openStat, now => (now === stat.kind ? null : stat.kind))}>
+          <Button key={`stat-${stat.kind}`} plain dimColor={!isOpen} onPress={() => {
+            void update($, showAll, () => false)
+            void update($, openStat, now => (now === stat.kind ? null : stat.kind))
+          }}>
             {parts}
           </Button>
         </Box>
@@ -760,7 +765,17 @@ export const register: Register = (on, options) => {
     /** The open stat's details, when this band draws that stat. */
     const detailRowsOf = (items: readonly (Stat | false)[], src: DetailSource, room: number) => {
       if (opened === null || !items.some(item => item !== false && item.kind === opened)) return []
-      return detailLines(opened, src, Math.min(MAX_DETAIL_ROWS, room)).map(line => detailRow(line))
+      // Pressing a `+N earlier` row lifts the cap: the list takes whatever room the band has.
+      const lines = detailLines(opened, src, isAll ? room : Math.min(MAX_DETAIL_ROWS, room))
+      const rows = lines.map(line => detailRow(line))
+      if (isAll && lines.length > MAX_DETAIL_ROWS) {
+        rows.push(
+          <Button key="detail-fewer" plain dimColor onPress={() => void update($, showAll, () => false)}>
+            {'  ▴ show fewer'}
+          </Button>,
+        )
+      }
+      return rows
     }
 
     const detailRow = (line: DetailLine) => {
@@ -773,6 +788,13 @@ export const register: Register = (on, options) => {
         parts.push('  ', <Text key="added" color="success">{`+${line.lines.added}`}</Text>, ' ', <Text key="removed" color="error">{`−${line.lines.removed}`}</Text>)
       }
       if (line.trail !== undefined) parts.push(<Text key="trail" dimColor>{`  ${line.trail}`}</Text>)
+      if (line.isMore === true && !isAll) {
+        return (
+          <Button key={`detail-${line.key}`} plain dimColor onPress={() => void update($, showAll, () => true)}>
+            {`  ${line.text} ▸ show all`}
+          </Button>
+        )
+      }
       return line.isNote ? (
         <Text key={`detail-${line.key}`} dimColor wrap="truncate-end">
           {parts}

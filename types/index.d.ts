@@ -136,6 +136,8 @@ declare module 'claude-code' {
       agents: AgentRun[]
       /** The stat whose details are open under the stats row, in every band, until pressed again. */
       openStat: StatKind | null
+      /** The open stat lists everything, not its latest few: set by pressing its `+N earlier` row. */
+      showAll: boolean
     }
   }
 }

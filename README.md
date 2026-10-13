@@ -51,6 +51,8 @@ Each count under the bar is a button. Click it, or focus the band with `ctrl+x t
 | ⚠ errors | Each failed call, a subagent's marked with ⑂, and why it failed |
 | ☰ tasks | In the summary: the task list or plan steps, with ✓ ◐ ○ |
 
+A list shows its latest rows, with a `+N earlier` (or `+N more`) row when others do not fit. Press that row to list them all, up to the room the band has, and press `▴ show fewer` to go back. Closing the list or opening another one starts it capped again.
+
 The summary keeps the finished turn's details, so you can open them after the turn ends. Line counts come from each edit's own patch. A notebook edit, or a rewrite of a file too large to diff, has no line count, and its file reads `changed` instead.
 
 ## How progress is measured

@@ -118,6 +118,30 @@ test('the tool calls stat lists each call with its outcome and a tally', async (
   expect(rows.some(t => /✗ \$ Run the failing check .*Exit code 1/.test(t)), 'a failure with its reason').toBe(true)
 })
 
+test('a `+N earlier` row opens the whole list, and `show fewer` takes it back', async ($, on) => {
+  await busyTurn($, on)
+  for (let i = 0; i < 12; i++) await $.tool.call({ tool: 'Read', file_path: `/repo/src/extra${i}.ts` })
+  const ui = await mount($, 'terminal', true)
+  await ui.press({ key: 'stat-tools' })
+  const before = await texts(ui)
+  expect(before.some(t => /^\s+\+\d+ earlier ▸ show all$/.test(t)), 'the cap hides the oldest calls').toBe(true)
+  expect(before.some(t => /reading a\.ts/.test(t)), 'the first call is among them').toBe(false)
+
+  await ui.press({ key: 'detail-more' })
+  const all = await texts(ui)
+  expect(all.some(t => /reading a\.ts/.test(t)), 'now the first call shows').toBe(true)
+  expect(all.some(t => /earlier/.test(t))).toBe(false)
+
+  await ui.press({ key: 'detail-fewer' })
+  expect((await texts(ui)).some(t => /reading a\.ts/.test(t)), 'back to the latest').toBe(false)
+
+  await ui.press({ key: 'detail-more' })
+  await ui.press({ key: 'stat-tools' })
+  await ui.press({ key: 'stat-tools' })
+  expect((await texts(ui)).some(t => /reading a\.ts/.test(t)), 'reopening starts capped again').toBe(false)
+  await ui.unmount()
+})
+
 test('the subagents, steps, errors and reads stats each open their own list', async ($, on) => {
   await busyTurn($, on)
   const ui = await mount($, 'terminal', true)

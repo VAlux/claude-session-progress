@@ -180,6 +180,8 @@ export type DetailLine = {
   lines?: { added: number; removed: number }
   /** A header or a `+N more` row, drawn dim. */
   isNote?: boolean
+  /** The `+N earlier` / `+N more` row: pressed, it opens the whole list. */
+  isMore?: boolean
 }
 
 export type DetailSource = {
@@ -212,14 +214,14 @@ const runMark = (run: AgentRun): Pick<DetailLine, 'glyph' | 'color'> =>
 function latest(lines: DetailLine[], room: number, what = 'earlier'): DetailLine[] {
   if (lines.length <= room) return lines
   const keep = Math.max(1, room - 1)
-  return [{ key: 'more', text: `+${lines.length - keep} ${what}`, isNote: true }, ...lines.slice(-keep)]
+  return [{ key: 'more', text: `+${lines.length - keep} ${what}`, isNote: true, isMore: true }, ...lines.slice(-keep)]
 }
 
 /** The first `room` of `lines`, a `+N more` row last when some do not fit. */
 function first(lines: DetailLine[], room: number): DetailLine[] {
   if (lines.length <= room) return lines
   const keep = Math.max(1, room - 1)
-  return [...lines.slice(0, keep), { key: 'more', text: `+${lines.length - keep} more`, isNote: true }]
+  return [...lines.slice(0, keep), { key: 'more', text: `+${lines.length - keep} more`, isNote: true, isMore: true }]
 }
 
 /** Names packed side by side into rows of `columns` cells. */
