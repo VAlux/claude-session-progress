@@ -31,9 +31,10 @@ The desktop app's Code tab has no `/plugin` command. Install it from a terminal 
 | **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts, each with its own icon: ⚒ tool calls, ⑂ subagents, ✎ files changed with the lines added and removed, ⌕ files read, ↻ model steps, ⇅ tokens with their estimated cost in USD, and ⚠ errors. Below them, what is running right now. |
 | **When you click a count** | Its details open under the row (see [Details](#details)). Click it again to close them. |
 | **When the steps are known** | The bar shows real progress, and the headline names the step in progress. A plan file's steps are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
+| **How long is left** | Once Claude has said what is left, the bar's label counts it down: `~4m left (3–6m)`, then `~1m 30s left`, then `a few seconds left`. It turns amber with `↑` for a few seconds when the estimate grows, and the bar itself never moves back. See [How long is left](#how-long-is-left). |
 | **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*, and its bar stays where the plan is instead of filling. |
 | **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
-| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the estimated cost of the task in USD, the model and the most-used tools, and, from the second turn on, one line of totals for the session, cost included. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
+| **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the estimated cost of the task in USD, the model and the most-used tools, how the first estimate compared with what followed (`⏱ at 1m 20s: estimated ~6m more (3–9m) · took 6m 20s more`), and, from the second turn on, one line of totals for the session, cost included. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
 | **On your next prompt** | The summary goes away. |
 
 ## Details
@@ -57,16 +58,27 @@ The summary keeps the finished turn's details, so you can open them after the tu
 
 ## How progress is measured
 
-| Source | What the bar shows |
+| Source | What the countdown counts |
 | --- | --- |
-| A task list (`TodoWrite`, or `TaskCreate` / `TaskUpdate`) | Done ÷ total, with the task in progress counting as half |
-| A Markdown plan with `- [ ]` / `- [x]` boxes that Claude reads or edits | Ticked ÷ total, moving forward as boxes are ticked |
-| A plan with two or more `### Task N:` headings | Done tasks ÷ total. A task is done when all its boxes are ticked, or when a superpowers ledger reports `Task N: complete`, whether in a Bash call's output (`task-done`) or in its `progress.md` that Claude reads. superpowers' executor never ticks a plan's boxes, so without this its plans stayed at 0%. |
-| Neither | A soft streak sweeps the track. There is no honest percentage to show, so it does not invent one, and the bar carries no label: the clock is on the row above. |
+| Claude's own report, through the mod's `progress` tool | The items Claude says are left, each sized `s`, `m` or `l`, or named by the command that running is the item. Claude Code draws nothing for them, so the band lists them under the bar, each with its estimate. |
+| A task list (`TodoWrite`, or `TaskCreate` / `TaskUpdate`) | The tasks not yet done, the one in progress by what is left of it |
+| A Markdown plan with `- [ ]` / `- [x]` boxes that Claude reads or edits | The boxes not yet ticked |
+| A plan with two or more `### Task N:` headings | The tasks not yet done. A task is done when all its boxes are ticked, or when a superpowers ledger reports `Task N: complete`, whether in a Bash call's output (`task-done`) or in its `progress.md` that Claude reads. superpowers' executor never ticks a plan's boxes, so without this its plans never moved. |
+| None of these | A soft streak sweeps the track. There is nothing to count down, so it does not invent a number, and the bar carries no label: the clock is on the row above. |
 
-A task list wins over a plan file. A plan that is still unfinished carries over to the next turn, and a finished one is cleared. A subagent's own task list never replaces the main one, but a subagent can still mark the main session's tasks done. Its own list drives its own band instead.
+A report wins over a task list for the countdown, and a task list over a plan file; the rows under the bar and the `2/5 tasks` count keep following a task list or plan when there is one. A plan that is still unfinished carries over to the next turn, and a finished one is cleared; a report belongs to its turn. A subagent's own task list or report never replaces the main one, but a subagent can still mark the main session's tasks done. Its own drives its own band instead.
 
-The mod also adds one line to the system prompt, asking Claude to keep a task list when a task has several known steps, so the bar has real steps to follow more often.
+The mod adds two lines to the system prompt: one asking Claude to keep a task list when a task has several known steps, one asking it to report what is left with the `progress` tool when it has not.
+
+## How long is left
+
+Each item is worked out in rounds (a model request and the tools it ran), from how many rounds items of its size took in your past turns, times how long this turn's rounds take. History stores rounds, not seconds, so a slower model or a higher effort changes the pace, not the history. A `run` item's estimate is that command's own measured time in this project: the band times every Bash call. As the turn goes, how its finished items compared with their estimates corrects the rest.
+
+The range, `(3–6m)`, comes from how much those past times varied. It narrows as items finish. The bar moves at the speed that reaches the end with the countdown, slows when the work grows, and waits at 97% until the turn ends.
+
+There is no countdown before Claude's first report, while the turn waits on a subagent that has not reported, and once an item runs far past its range with no report for several rounds.
+
+What it learns is kept in the mod's own store, a JSON file under your Claude Code configuration directory: samples per size, the last 10 runs of each command per project, and each turn's first estimate against what followed (the last 200), which is how its accuracy can be judged on your own turns. Each report is a tool call Claude makes alongside its others: tens of output tokens, and no extra model request. Its rows are hidden from the transcript.
 
 ## When it appears
 
@@ -87,6 +99,7 @@ Change it in `/config`, or with `claude plugin configure session-progress`.
 | Setting | Values | What it does |
 | --- | --- | --- |
 | `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's steps or tasks only, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
+| `eta` | **`on`**, `off` | Whether the band counts down the work left. `off` registers no tool, adds no prompt line, records nothing, and the bar shows the share of a plan done, as before 0.2.0. |
 
 To make the band your only task view, hide Claude Code's own list with `ctrl+t` and set `stepRows` to `always`.
 
@@ -94,6 +107,8 @@ To make the band your only task view, hide Claude Code's own list with `ctrl+t` 
 
 - It draws in the terminal and in the desktop app. On the desktop the bar and spinner are vector drawings that animate themselves, and the finish lands at once instead of easing in. The VS Code extension and the mobile app have no band above the prompt, so they show nothing extra.
 - Costs are estimates: each model step's tokens at Anthropic's list prices (the table at the top of [`hooks/frames.ts`](hooks/frames.ts)), subagents included. A model missing from the table adds nothing, and a plan's discount or a different provider's rate is not reflected.
+- The countdown is an estimate: early on it rests on few items and Claude's own sizing, and the summary's `⏱` line shows how far off it was.
+- A command's learned time includes any wait for you to approve it, so a run you approved slowly reads long until later runs push it out. A refused command is never learned.
 - Collapse the band at any time with `ctrl+x ctrl+a`, or with the `[-]` mark at its right edge.
 - A bug in the mod never blocks a tool call: its tool hook passes the call through if it fails.
 - It shares the space above the prompt: another mod's band there (factory-floor's strip, say) is drawn above it, not hidden.
@@ -112,6 +127,9 @@ claude plugin test ./claude-session-progress
 | --- | --- |
 | [`hooks/register.tsx`](hooks/register.tsx) | The hooks: turn and tool tracking, plan files, the system-prompt line, the band |
 | [`hooks/details.ts`](hooks/details.ts) | What each count opens onto: the per-call, per-file and per-step records, line counting, and the detail rows |
+| [`hooks/eta.ts`](hooks/eta.ts) | The countdown: pace, each item's spread, the total, the fill, and what a loop learns |
+| [`hooks/report.ts`](hooks/report.ts) | The `progress` tool, its prompt line, and reading reports into a work list |
+| [`hooks/history.ts`](hooks/history.ts) | The countdown's samples in the mod's store |
 | [`hooks/frames.ts`](hooks/frames.ts) | Bar and spinner frames (terminal cells, desktop SVG), the plan and ledger parsers, formatting |
 | [`types/index.d.ts`](types/index.d.ts) | The mod's state contract |
 | [`tests/`](tests) | Behaviour tests, run with `claude plugin test` |
