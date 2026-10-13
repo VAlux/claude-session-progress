@@ -2,6 +2,8 @@
 
 import type { ToolSpec } from 'claude-code'
 
+import type { Task, Work, WorkItem } from '../types'
+
 /** The tool's short name, and the name the model calls it by. */
 export const PROGRESS_NAME = 'progress'
 export const PROGRESS_TOOL = 'mcp__session-progress__progress'
@@ -50,4 +52,61 @@ export function etaLine(tools: readonly string[]): string | null {
     'Send {done: 1} when you finish it and send `left` again when the work changes. ' +
     'Always send it in the same response as your other tool calls, never on its own. It only feeds the progress display.'
   )
+}
+
+/** One report: the whole list left, or how many items at its top are finished. */
+export type Report = { left: WorkItem[] } | { done: number }
+
+const MAX_ITEMS = 30
+const MAX_TEXT = 80
+const MAX_FINISHED = 50
+
+/** One item of `left`: an object with its text, or the text alone. */
+function itemOf(raw: unknown): WorkItem | null {
+  const r = (typeof raw === 'object' && raw !== null ? raw : typeof raw === 'string' ? { do: raw } : {}) as Record<string, unknown>
+  const text = typeof r.do === 'string' ? r.do.trim().slice(0, MAX_TEXT) : ''
+  if (text === '') return null
+  if (typeof r.run === 'string' && r.run.trim() !== '') return { do: text, run: r.run.trim() }
+  if (r.size === 's' || r.size === 'm' || r.size === 'l') return { do: text, size: r.size }
+  return { do: text }
+}
+
+/** A report from the tool's input, trimmed to what the band holds; null for one that says nothing. */
+export function parseReport(input: Record<string, unknown>): Report | null {
+  if (Array.isArray(input.left)) {
+    return { left: input.left.slice(0, MAX_ITEMS).map(itemOf).filter((item): item is WorkItem => item !== null) }
+  }
+  const done = typeof input.done === 'number' && Number.isFinite(input.done) ? Math.floor(input.done) : 0
+  return done >= 1 ? { done } : null
+}
+
+/** The top item that finished, and since when it had been on top: what its time is learned from. */
+export type Finished = { item: WorkItem; since: number }
+
+/** A work list after a report, and the top item when the report says it ended on its own, so its time can be learned. */
+export function applyReport(work: Work | null, report: Report, now: number): { work: Work | null; finished: Finished | null } {
+  if ('done' in report) {
+    if (work === null || work.items.length === 0) return { work, finished: null }
+    const ended = work.items.slice(0, report.done)
+    const next: Work = { items: work.items.slice(report.done), finished: [...work.finished, ...ended.map(item => item.do)].slice(-MAX_FINISHED), topSince: now }
+    // Several at once leave no telling how long each took.
+    return { work: next, finished: ended.length === 1 ? { item: ended[0]!, since: work.topSince } : null }
+  }
+  const { left } = report
+  if (work === null) return { work: { items: left, finished: [], topSince: now }, finished: null }
+  const top = work.items[0]
+  const isGone = top !== undefined && !left.some(item => item.do === top.do)
+  const isStill = top !== undefined && left[0]?.do === top.do
+  return {
+    work: { items: left, finished: isGone ? [...work.finished, top.do].slice(-MAX_FINISHED) : work.finished, topSince: isStill ? work.topSince : now },
+    finished: isGone ? { item: top, since: work.topSince } : null,
+  }
+}
+
+/** A work list as the band's step rows: what finished, the item in progress, the rest. */
+export function workTasks(work: Work): Task[] {
+  return [
+    ...work.finished.map((text, i): Task => ({ id: `done-${i}`, subject: text, status: 'completed' })),
+    ...work.items.map((item, i): Task => ({ id: `work-${i}`, subject: item.do, status: i === 0 ? 'in_progress' : 'pending' })),
+  ]
 }

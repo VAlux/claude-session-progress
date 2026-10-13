@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { PROGRESS_TOOL } from '../hooks/report'
+import { PROGRESS_TOOL, applyReport, parseReport, workTasks } from '../hooks/report'
 
 const PLUGIN = 'session-progress'
 
@@ -112,4 +112,63 @@ test('a report is not counted as a tool call', async ($, on) => {
   const texts = (await ui.findAll({})).map(el => el.text)
   await ui.unmount()
   expect(texts.some(t => /^⚒ 3 tool calls$/.test(t))).toBe(true)
+})
+
+test('a report is read leniently: trimmed, clamped, sizes checked, a command winning over a size', () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ do: `item ${i}`, size: 's' }))
+  expect(parseReport({ left: many })).toEqual({ left: many.slice(0, 30) })
+  expect(parseReport({ left: [{ do: `  ${'x'.repeat(100)}  ` }] })).toEqual({ left: [{ do: 'x'.repeat(80) }] })
+  expect(parseReport({ left: [{ do: 'run it', size: 'm', run: ' npm test ' }] })).toEqual({ left: [{ do: 'run it', run: 'npm test' }] })
+  expect(parseReport({ left: [{ do: 'odd', size: 'xl' }, { do: '' }, 'read the code', 7] })).toEqual({ left: [{ do: 'odd' }, { do: 'read the code' }] })
+  expect(parseReport({ left: [] })).toEqual({ left: [] })
+  expect(parseReport({ done: 2.7 })).toEqual({ done: 2 })
+  expect(parseReport({ done: 0 })).toBeNull()
+  expect(parseReport({ done: 'x' })).toBeNull()
+  expect(parseReport({})).toBeNull()
+  expect(parseReport({ left: [{ do: 'a' }], done: 1 }), 'the whole list wins over done').toEqual({ left: [{ do: 'a' }] })
+})
+
+const a = { do: 'read the code', size: 's' as const }
+const b = { do: 'fix the parser', size: 'm' as const }
+const c = { do: 'run the tests', run: 'npm test' }
+
+test('the first report starts the list; done: 1 ends the top item and times it', () => {
+  const first = applyReport(null, { left: [a, b] }, 100)
+  expect(first).toEqual({ work: { items: [a, b], finished: [], topSince: 100 }, finished: null })
+  const next = applyReport(first.work, { done: 1 }, 400)
+  expect(next.work).toEqual({ items: [b], finished: ['read the code'], topSince: 400 })
+  expect(next.finished).toEqual({ item: a, since: 100 })
+})
+
+test('done for several items, or more than the list holds, empties what it says and times nothing', () => {
+  const work = { items: [a, b, c], finished: [], topSince: 100 }
+  expect(applyReport(work, { done: 2 }, 400)).toEqual({ work: { items: [c], finished: ['read the code', 'fix the parser'], topSince: 400 }, finished: null })
+  const all = applyReport({ items: [a, b], finished: [], topSince: 100 }, { done: 5 }, 400)
+  expect(all.work?.items).toEqual([])
+  expect(all.finished).toBeNull()
+})
+
+test('done before any list changes nothing', () => {
+  expect(applyReport(null, { done: 1 }, 400)).toEqual({ work: null, finished: null })
+  expect(applyReport({ items: [], finished: ['x'], topSince: 1 }, { done: 1 }, 400)).toEqual({ work: { items: [], finished: ['x'], topSince: 1 }, finished: null })
+})
+
+test('a new list without the top item ends it; one that keeps it keeps its clock; items dropped lower down are not finished', () => {
+  const work = { items: [a, b, c], finished: [], topSince: 100 }
+  const moved = applyReport(work, { left: [b, c] }, 400)
+  expect(moved.work).toEqual({ items: [b, c], finished: ['read the code'], topSince: 400 })
+  expect(moved.finished).toEqual({ item: a, since: 100 })
+  expect(applyReport(work, { left: [a, c] }, 400)).toEqual({ work: { items: [a, c], finished: [], topSince: 100 }, finished: null })
+  const reordered = applyReport(work, { left: [b, a] }, 400)
+  expect(reordered.work?.topSince, 'another item on top starts its own clock').toBe(400)
+  expect(reordered.finished).toBeNull()
+  expect(applyReport({ items: [a], finished: [], topSince: 100 }, { left: [] }, 400).finished, 'an empty list ends the last item').toEqual({ item: a, since: 100 })
+})
+
+test('the band lists a work list as steps: finished, the one in progress, the rest', () => {
+  expect(workTasks({ items: [b, c], finished: ['read the code'], topSince: 1 })).toEqual([
+    { id: 'done-0', subject: 'read the code', status: 'completed' },
+    { id: 'work-0', subject: 'fix the parser', status: 'in_progress' },
+    { id: 'work-1', subject: 'run the tests', status: 'pending' },
+  ])
 })

@@ -24,6 +24,12 @@ export type Spread = { ms: number; lowMs: number; highMs: number }
 /** Samples a loop gathered and has not yet written: round-equivalents by kind, and milliseconds by command. */
 export type EtaPending = { sizes: Partial<Record<SampleKind, number[]>>; commands: Record<string, number[]> }
 
+/** One item of a `progress` report: sized, or named by the command that running is the item. */
+export type WorkItem = { do: string; size?: 's' | 'm' | 'l'; run?: string }
+
+/** A loop's Progress list: what is left in order, the item in progress first; what finished; and since when the top item has been on top. */
+export type Work = { items: WorkItem[]; finished: string[]; topSince: number }
+
 /** One tool call as a band's details list it; `agentId` marks a subagent's. */
 export type CallRecord = {
   id: string
