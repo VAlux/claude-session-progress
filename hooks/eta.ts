@@ -145,6 +145,9 @@ export function runningSince(detail: Detail, work: Work | null): number | null {
   return [...detail.calls].reverse().find(c => c.status === 'running' && c.command === command)?.startedAt ?? null
 }
 
+/** A task's key for its timing: its id and its text, since a TodoWrite list numbers its entries by position. */
+export const taskKey = (task: Task) => `${task.id}:${task.subject}`
+
 /** Which kind of list an estimate's items come from: a task list, a plan's tasks, or a plan's steps. */
 export type TaskKind = 'task' | 'planTask' | 'planStep'
 /** Which report an estimate was worked out from: a Progress list, a task list, or a plan. */
@@ -179,8 +182,6 @@ export function estimate(x: EtaInput): EtaOutput {
   let source: EtaSource
   const work = x.work
   if (work !== null) {
-    // Down to its answer, yet still at work: Claude no longer knows what is left.
-    if (work.items.length === 0 && x.roundsSinceReport >= 2) return NONE
     source = 'progress'
     parts = work.items.map((item, i) => ({
       key: `work-${i}`,
@@ -192,10 +193,12 @@ export function estimate(x: EtaInput): EtaOutput {
     const basis = sizedBasis(x.sizes[x.tasks.kind], pace, x.c)
     parts = x.tasks.list
       .filter(task => task.status !== 'completed')
-      .map(task => ({ key: task.id, basis, spentMs: task.status === 'in_progress' ? x.now - (x.since[task.id] ?? x.now) : null }))
+      .map(task => ({ key: task.id, basis, spentMs: task.status === 'in_progress' ? x.now - (x.since[taskKey(task)] ?? x.now) : null }))
   } else {
     return NONE
   }
+  // Nothing left by its report, yet still at work rounds later: it no longer knows what is left.
+  if (parts.length === 0 && x.roundsSinceReport >= 2) return NONE
 
   const spreads: Spread[] = []
   const items: EtaOutput['items'] = []
@@ -257,11 +260,12 @@ export function learnItem(eta: EtaTurn, finished: { item: WorkItem; since: numbe
 export function learnTasks(eta: EtaTurn, list: readonly Task[], kind: TaskKind, now: number, pace: number | null, sizes: Sizes): EtaTurn {
   let out = eta
   for (const task of list) {
-    const since = out.since[task.id]
+    const key = taskKey(task)
+    const since = out.since[key]
     if (task.status === 'in_progress' && since === undefined) {
-      out = { ...out, since: { ...out.since, [task.id]: now } }
-    } else if (task.status === 'completed' && since !== undefined && !out.counted.includes(task.id)) {
-      out = { ...out, counted: [...out.counted, task.id] }
+      out = { ...out, since: { ...out.since, [key]: now } }
+    } else if (task.status === 'completed' && since !== undefined && !out.counted.includes(key)) {
+      out = { ...out, counted: [...out.counted, key] }
       if (pace !== null && pace > 0) out = withFinished(out, kind, (now - since) / pace, sizes)
     }
   }

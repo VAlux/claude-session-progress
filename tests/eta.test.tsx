@@ -21,6 +21,7 @@ import {
   sizedBasis,
   spreadOf,
   startFill,
+  taskKey,
   tickEta,
   totalOf,
   type EtaInput,
@@ -206,7 +207,8 @@ test("a run item is its command's times, timed from when the command started", (
 const tasks = (statuses: Task['status'][]): Task[] => statuses.map((status, i) => ({ id: `todo-${i}`, subject: `task ${i}`, status }))
 
 test("a task list's estimate: the task in progress from when it began, the pending ones' medians", () => {
-  const out = estimate(input({ tasks: { list: tasks(['completed', 'in_progress', 'pending']), kind: 'task' }, since: { 'todo-1': NOW - 20_000 } }))
+  const list = tasks(['completed', 'in_progress', 'pending'])
+  const out = estimate(input({ tasks: { list, kind: 'task' }, since: { [taskKey(list[1]!)]: NOW - 20_000 } }))
   expect(out.estimate?.ms).toBe(90_000)
   expect(out.source).toBe('tasks')
   expect(out.items.map(i => i.key)).toEqual(['todo-1', 'todo-2'])
@@ -214,7 +216,8 @@ test("a task list's estimate: the task in progress from when it began, the pendi
 })
 
 test('an item far past its range with no report for 8 rounds loses its estimate', () => {
-  const late = { tasks: { list: tasks(['in_progress']), kind: 'task' as const }, since: { 'todo-0': NOW - 80_000 } }
+  const list = tasks(['in_progress'])
+  const late = { tasks: { list, kind: 'task' as const }, since: { [taskKey(list[0]!)]: NOW - 80_000 } }
   expect(estimate(input({ ...late, roundsSinceReport: 7 })).estimate?.ms).toBe(30_000)
   expect(estimate(input({ ...late, roundsSinceReport: 8 })).estimate).toBeNull()
 })
@@ -222,6 +225,12 @@ test('an item far past its range with no report for 8 rounds loses its estimate'
 test('down to its answer, a list is one round; two rounds later, with Claude still at work, it is none', () => {
   expect(estimate(input({ work: listed([]), roundsSinceReport: 0 })).estimate).toEqual({ ms: 10_000, lowMs: 10_000, highMs: 10_000 })
   expect(estimate(input({ work: listed([]), roundsSinceReport: 2 })).estimate).toBeNull()
+})
+
+test('a task list with every task done is one round, and none two rounds on', () => {
+  const done = tasks(['completed', 'completed'])
+  expect(estimate(input({ tasks: { list: done, kind: 'task' }, roundsSinceReport: 0 })).estimate).toEqual({ ms: 10_000, lowMs: 10_000, highMs: 10_000 })
+  expect(estimate(input({ tasks: { list: done, kind: 'task' }, roundsSinceReport: 2 })).estimate).toBeNull()
 })
 
 test('a finished sized item is learned in round-equivalents, and adds to c; a run item is not', () => {
@@ -235,14 +244,24 @@ test('a finished sized item is learned in round-equivalents, and adds to c; a ru
 })
 
 test('a task is timed from when it came into progress to when it finished, once', () => {
-  const started = learnTasks(freshEta(0), tasks(['in_progress', 'pending']), 'task', 1_000, 10_000, SEEDS)
-  expect(started.since).toEqual({ 'todo-0': 1_000 })
+  const list = tasks(['in_progress', 'pending'])
+  const started = learnTasks(freshEta(0), list, 'task', 1_000, 10_000, SEEDS)
+  expect(started.since).toEqual({ [taskKey(list[0]!)]: 1_000 })
   const finished = learnTasks(started, tasks(['completed', 'in_progress']), 'task', 41_000, 10_000, SEEDS)
   expect(finished.pending.sizes.task).toEqual([4])
-  expect(finished.since['todo-1']).toBe(41_000)
+  expect(finished.since[taskKey(list[1]!)]).toBe(41_000)
   const again = learnTasks(finished, tasks(['completed', 'in_progress']), 'task', 50_000, 10_000, SEEDS)
   expect(again.pending.sizes.task, 'never learned twice').toEqual([4])
   expect(learnTasks(freshEta(0), tasks(['completed']), 'task', 1_000, 10_000, SEEDS).pending.sizes, 'one never seen in progress').toEqual({})
+})
+
+test('a rewritten task list times the task now at a position as a new one', () => {
+  const one = (status: Task['status'], subject: string): Task[] => [{ id: 'todo-0', subject, status }]
+  const a = learnTasks(freshEta(0), one('in_progress', 'write types'), 'task', 0, 10_000, SEEDS)
+  const b = learnTasks(a, one('completed', 'write types'), 'task', 30_000, 10_000, SEEDS)
+  const c = learnTasks(b, one('in_progress', 'write docs'), 'task', 40_000, 10_000, SEEDS)
+  const d = learnTasks(c, one('completed', 'write docs'), 'task', 60_000, 10_000, SEEDS)
+  expect(d.pending.sizes.task).toEqual([3, 2])
 })
 
 test("a Bash call's time joins its command's runs, the last 10 kept", () => {
