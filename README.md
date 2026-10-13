@@ -30,10 +30,10 @@ The desktop app's Code tab has no `/plugin` command. Install it from a terminal 
 | --- | --- |
 | **While Claude works** | A pulsing spinner and the step Claude is on, an animated bar, elapsed time, and a row of counts, each with its own icon: ⚒ tool calls, ⑂ subagents, ✎ files changed with the lines added and removed, ⌕ files read, ↻ model steps, ⇅ tokens with their estimated cost in USD, and ⚠ errors. Below them, what is running right now. |
 | **When you click a count** | Its details open under the row (see [Details](#details)). Click it again to close them. |
-| **When the steps are known** | The bar shows real progress, and the headline names the step in progress. A plan file's steps are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
+| **When the steps are known** | The headline names the step in progress, and the bar moves toward the end as the countdown runs down. A plan file's steps, and the items Claude reports, are listed under the bar with ✓ done, ◐ in progress and ○ to do. A task list's are not, because Claude Code already draws its own. |
 | **How long is left** | Once Claude has said what is left, the bar's label counts it down: `~4m left (3–6m)`, then `~1m 30s left`, then `a few seconds left`. It turns amber with `↑` for a few seconds when the estimate grows, and the bar itself never moves back. See [How long is left](#how-long-is-left). |
 | **When Claude hands off to a subagent** | A turn that ends while the subagents it started still run says *Waiting for N subagents*, not *Task complete*, and its bar stays where the plan is instead of filling. |
-| **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
+| **In a subagent's transcript** | Open a subagent from the tasks list and the band follows that subagent alone: its current task or activity, its own task list or report, its countdown and bar, its tool calls, files, tokens and time. When it answers, the band says *Subagent complete*. A subagent the band never saw (one that started before the mod loaded) gets no band, rather than the main one's. |
 | **When it finishes** | The bar fills and turns green, or amber if you interrupted it, or red on an error. The summary lists work done, tokens in and out with the cache share, the estimated cost of the task in USD, the model and the most-used tools, how the first estimate compared with what followed (`⏱ at 1m 20s: estimated ~6m more (3–9m) · took 6m 20s more`), and, from the second turn on, one line of totals for the session, cost included. It leaves the turn's time to Claude Code's own closing line (`Brewed for 5m 59s`). |
 | **On your next prompt** | The summary goes away. |
 
@@ -98,7 +98,7 @@ Change it in `/config`, or with `claude plugin configure session-progress`.
 
 | Setting | Values | What it does |
 | --- | --- | --- |
-| `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's steps or tasks only, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
+| `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's steps and the items Claude reports, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
 | `eta` | **`on`**, `off` | Whether the band counts down the work left. `off` registers no tool, adds no prompt line, records nothing, and the bar shows the share of a plan done, as before 0.2.0. |
 
 To make the band your only task view, hide Claude Code's own list with `ctrl+t` and set `stepRows` to `always`.

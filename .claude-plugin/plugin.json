@@ -18,7 +18,7 @@
     "stepRows": {
       "type": "string",
       "title": "Step rows",
-      "description": "When the band lists the steps under its bar. auto: only for a Markdown plan's checkboxes, since Claude Code already draws its own task list. always: for task lists too. never: not at all.",
+      "description": "When the band lists the steps under its bar. auto: a Markdown plan's checkboxes and the items Claude reports through the progress tool, since Claude Code already draws its own task list. always: task lists too. never: nothing.",
       "default": "auto",
       "options": [
         "auto",
