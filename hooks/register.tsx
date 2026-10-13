@@ -420,8 +420,12 @@ async function refreshEta($: Dollar, now: number) {
         : { ...run, eta: refreshed(run.eta, detailOf(run), run.tasks.length > 0 ? { list: run.tasks, kind: 'task' } : null, run.steps, now, null) },
     ),
   )
-  const waitedOn = (await read($, agents)).filter(run => run.dispatchedByMain && isRunning(run)).map(run => run.eta?.last ?? null)
   const l = await read($, live)
+  const turnStart = (await read($, etaTurn))?.startedAt
+  // While the turn is live, a subagent an earlier turn started is not its to wait on; after it, the ones still running are what the wait is.
+  const waitedOn = (await read($, agents))
+    .filter(run => run.dispatchedByMain && isRunning(run) && (l === null || turnStart === undefined || run.startedAt >= turnStart))
+    .map(run => run.eta?.last ?? null)
   const steps = await readSteps($)
   await update($, etaTurn, eta => {
     if (eta === null) return eta
@@ -462,6 +466,17 @@ async function markReport($: Dollar, agentId: string | undefined, now: number) {
     await update($, etaTurn, eta => (eta === null ? eta : { ...eta, lastReportRound: rounds }))
   }
   await refreshEta($, now)
+}
+
+/** Runs a change to the plan file, counted as a report only when the plan came out different (reading a README is no report). */
+async function reportsPlanChange($: Dollar, now: number, change: () => Promise<unknown>) {
+  if (!config.eta) {
+    await change()
+    return
+  }
+  const before = JSON.stringify(await read($, planFile))
+  await change()
+  if (JSON.stringify(await read($, planFile)) !== before) await markReport($, undefined, now)
 }
 
 export function shouldShow(l: Live, now: number, planSize: number): boolean {
@@ -528,7 +543,8 @@ function startTicking($: Dollar) {
       return { ...l, isLong: true }
     })
     if (becameLong) startFrames($)
-    await refreshEta($, now)
+    // A failure in the estimator must not skip the tick below, or the band's clock would freeze.
+    await refreshEta($, now).catch(() => {})
     await update($, tick, n => n + 1)
   })
 }
@@ -722,7 +738,7 @@ export const register: Register = (on, options) => {
     const isAgent = e.tool === 'Agent' || String(e.tool) === 'Task'
     const now = await $.clock.now()
 
-    const command = e.tool === 'Bash' && typeof input.command === 'string' && input.command.trim() !== '' ? commandKey(input.command) : null
+    const command = config.eta && e.tool === 'Bash' && typeof input.command === 'string' && input.command.trim() !== '' ? commandKey(input.command) : null
     const call = {
       id: e.tool_use_id,
       tool: e.tool,
@@ -825,13 +841,11 @@ export const register: Register = (on, options) => {
     if (!failed && e.tool === 'Bash') {
       const reported = bashReported(ran)
       if (reported.length > 0) {
-        await update($, planFile, plan => (plan === null ? plan : withCompleted(plan, reported)))
-        await markReport($, undefined, ended)
+        await reportsPlanChange($, ended, () => update($, planFile, plan => (plan === null ? plan : withCompleted(plan, reported))))
       }
     }
     if (!failed && PLAN_FILE_TOOLS.has(e.tool) && path !== null && isMarkdown(path)) {
-      await trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null)
-      await markReport($, undefined, ended)
+      await reportsPlanChange($, ended, () => trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null))
     }
 
     return ran
@@ -966,7 +980,9 @@ export const register: Register = (on, options) => {
           ) : (
             <Box key={`task-row-${task.id}`} flexDirection="row" justifyContent="space-between" width={marks.rowWidth}>
               <Box flexShrink={1}>{row}</Box>
-              <Text dimColor>{` ${trail}`}</Text>
+              <Box flexShrink={0}>
+                <Text dimColor>{` ${trail}`}</Text>
+              </Box>
             </Box>
           ),
         )
@@ -1086,7 +1102,13 @@ export const register: Register = (on, options) => {
       const barWidth = Math.max(12, width - BAR_SLACK)
       const isUp = !isDone && isGrowing(runEta?.upUntil, now)
       // Running with the countdown on, the label counts down; finished, or without it, it is the share done.
-      const label = config.eta && !isDone ? countdownLabel(runEta?.last ?? null, isUp, isTerminal, barWidth) : progress === null ? '' : pctLabel(progress)
+      // A fill paced by time is no share, so with the countdown on only an answer names one.
+      const label =
+        config.eta && !isDone
+          ? countdownLabel(runEta?.last ?? null, isUp, isTerminal, barWidth)
+          : progress === null || (config.eta && run.reason !== 'answer')
+            ? ''
+            : pctLabel(progress)
       const labelColor = label === '' ? MUTED : isUp ? WARN.base : palette.base
       const detail = detailOf(run)
       const stats = [
@@ -1303,14 +1325,16 @@ export const register: Register = (on, options) => {
     const waitLabel = waiting > 0 ? countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth) : ''
     // A wait with the countdown on shows the subagents' countdown or nothing: never a share it does not have.
     const isCounting = config.eta && waiting > 0
+    // The same for a turn that did not answer: its fill is paced by time, so with the countdown on only the answer's 100% names a share.
+    const showsPct = !isCounting && finalProgress !== null && (!config.eta || sum.reason === 'answer')
     if (isTerminal) {
       scene.barWidth = barWidth
       scene.palette = palette
-      scene.showPct = !isCounting && finalProgress !== null
+      scene.showPct = showsPct
       scene.label = waitLabel
       scene.labelColor = isUp ? WARN.base : palette.base
     }
-    const label = waitLabel !== '' ? waitLabel : isCounting || finalProgress === null || barProgress === null ? '' : pctLabel(barProgress)
+    const label = waitLabel !== '' ? waitLabel : !showsPct || barProgress === null ? '' : pctLabel(barProgress)
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0
 
     const detail = detailOf(sum)

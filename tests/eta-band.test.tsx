@@ -35,6 +35,9 @@ function engineBottom(on: On) {
     if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.startsWith('slow')) await new Promise<void>(resolve => held.push(resolve))
     if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.includes('refused')) return { deny: 'refused' } as never
     if (e.tool === 'Agent') return { result: { agentId: 'a1', agentType: 'general-purpose' } } as never
+    if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.startsWith('task-done')) {
+      return { result: { stdout: 'ledger: Task 1: complete (commits a..b, tests: x → ok)', stderr: '', interrupted: false } } as never
+    }
     return { result: e.tool === 'TodoWrite' ? { oldTodos: [], newTodos: e.todos } : 'ok' } as never
   })
   return { release: () => held.splice(0).forEach(resolve => resolve()) }
@@ -233,6 +236,48 @@ test("a finished run item's long round stays out of the pace", async ($, on) => 
   expect(has(await seen($, 'terminal'), /~30s left/)).toBe(true)
 })
 
+test('a plan file written in the default configuration gets its countdown, and keeps its rows', async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  const content = '# Plan\n\n- [x] Write the types\n- [ ] Write the hooks\n- [ ] Write the tests\n- [ ] Ship\n'
+  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/plan.md', content })
+  await clock.advance(1_000)
+  const shown = await seen($, 'terminal')
+  expect(has(shown, /~3m left/)).toBe(true)
+  expect(has(shown, /◐ Write the hooks/), 'a plan file keeps its rows').toBe(true)
+})
+
+/** Eight rounds on, 10 s apart, with no report: the one item reported is far past its range, and the countdown is gone. */
+async function goStale($: Engine, clock: Clock) {
+  for (const index of [2, 3, 4, 5, 6, 7, 8, 9]) {
+    await clock.advance(10_000)
+    await round($, index)
+  }
+  await clock.advance(1_000)
+}
+
+test('reading a file that changes no plan does not count as a report', async ($, on) => {
+  on('fs.read', () => ({ value: '# Readme\n\nNothing here to tick.\n' }))
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [MS.s] })
+  await goStale($, clock)
+  expect(has(await seen($, 'terminal'), /left/), 'stale first').toBe(false)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/README.md' })
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /left/)).toBe(false)
+})
+
+test('a ledger line for a task already reported done does not count as a report', async ($, on) => {
+  const plan = ['# Plan', '### Task 1: Write the types', '- [ ] Step', '### Task 2: Write the hooks', '- [ ] Step', '### Task 3: Ship', '- [ ] Step'].join('\n')
+  const { clock } = await pacedTurn($, on)
+  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/plan.md', content: plan })
+  await $.tool.call({ tool: 'Bash', command: 'task-done plan.md 1' })
+  await goStale($, clock)
+  expect(has(await seen($, 'terminal'), /left/), 'stale first').toBe(false)
+  await $.tool.call({ tool: 'Bash', command: 'task-done plan.md 1' })
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /left/)).toBe(false)
+})
+
 test('a reload mid-turn keeps the countdown', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.m, MS.s] })
@@ -316,6 +361,17 @@ test("the band lists Claude's items with an estimate on each, and names the one 
   expect(has(after, /1\/2 items/)).toBe(true)
 })
 
+test("an item's estimate sits in a box that cannot shrink, so the estimate never wraps", async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(1_000)
+  const ui = await mountBand($, 'terminal', true, 30, {})
+  const trails = await ui.findAll({ type: 'Box', text: /^ ~\d/ })
+  await ui.unmount()
+  expect(trails).toHaveLength(2)
+  expect(trails.every(box => box.props.flexShrink === 0)).toBe(true)
+})
+
 test('stepRows: never lists no items, and the headline still names the one in progress', { options: { stepRows: 'never' } }, async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.m, MS.s] })
@@ -390,6 +446,18 @@ test('a main turn with its own countdown shows none once it waits on a subagent 
   expect(has(await seen($, 'terminal'), /left/)).toBe(false)
 })
 
+test("an earlier turn's background subagent does not hold this turn's countdown", async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await $.tool.call({ tool: 'Agent', description: 'Review the branch', prompt: 'Review it.', subagent_type: 'general-purpose' })
+  await $.turn.complete(done('t1', 11_000))
+  await clock.advance(1_000)
+  await pacedNext($, clock, 't2')
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(1_000)
+  // a1 runs on with no estimate, yet this turn did not start it.
+  expect(has(await seen($, 'terminal'), /~1m 20s left/)).toBe(true)
+})
+
 test('the summary compares the first estimate with what followed', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.m, MS.s] })
@@ -405,5 +473,24 @@ test('an interrupted turn has no accuracy line', async ($, on) => {
   await clock.advance(60_000)
   await $.turn.complete(aborted('t1', 75_000))
   await clock.advance(2_000)
-  expect(has(await seen($, 'terminal', false), /⏱/)).toBe(false)
+  const shown = await seen($, 'terminal', false)
+  expect(has(shown, /⏱/)).toBe(false)
+  expect(shown.bars.some(text => /%/.test(text)), 'a bar paced by time has no share to name').toBe(false)
 })
+
+for (const [name, ended, headline, shares] of [
+  ['an interrupted subagent names no percentage', aborted, /Subagent interrupted/, false],
+  ['an answering subagent shows 100%', done, /Subagent complete/, true],
+] as const) {
+  test(`a finished subagent's band: ${name}`, async ($, on) => {
+    const clock = await withSubagent($, on)
+    await report($, { left: [MS.m, MS.s] }, 'a1')
+    await clock.advance(1_000)
+    await $.turn.complete({ ...ended('a1-turn', 20_000), agentId: 'a1' } as never)
+    await clock.advance(1_000)
+    const shown = await seen($, 'terminal', false, 80, { agentId: 'a1' })
+    expect(has(shown, headline)).toBe(true)
+    expect(shown.bars.some(text => /100%/.test(text))).toBe(shares)
+    expect(shown.bars.some(text => /%/.test(text))).toBe(shares)
+  })
+}
