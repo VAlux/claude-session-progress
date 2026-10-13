@@ -215,6 +215,8 @@ export function estimate(x: EtaInput): EtaOutput {
   }
   // Nothing left by its report, yet still at work rounds later: it no longer knows what is left.
   if (parts.length === 0 && x.roundsSinceReport >= 2) return NONE
+  // A long tool call is one round however long it runs, so a Progress list with nothing left also expires by time.
+  if (parts.length === 0 && work !== null && x.now - work.topSince > 3 * pace) return NONE
 
   const spreads: Spread[] = []
   const items: EtaOutput['items'] = []

@@ -119,6 +119,13 @@ test('nothing to write writes nothing', async () => {
   expect(data.size).toBe(0)
 })
 
+test("a store of a newer version is never written over: this release only reads what it understands", async () => {
+  const { store, data } = memoryStore({ 'eta.version': 2, 'eta.sizes': { s: [9] } })
+  const before = JSON.stringify([...data])
+  expect(await flushHistory(store, '/repo', { sizes: { s: [3] }, commands: { make: [4_000] } }, 1, row(1))).toBeNull()
+  expect(JSON.stringify([...data])).toBe(before)
+})
+
 test('a write that fails partway is retried without counting the samples twice', async () => {
   const { store, data } = memoryStore({}, 0, 'eta.commands')
   const written = await flushHistory(store, '/repo', { sizes: { s: [3] }, commands: { make: [4_000] } }, 1, null)

@@ -254,6 +254,11 @@ test('down to its answer, a list is one round; two rounds later, with Claude sti
   expect(estimate(input({ work: listed([]), roundsSinceReport: 2 })).estimate).toBeNull()
 })
 
+test('down to its answer, a list is none after three rounds of time too, however few rounds a long call took', () => {
+  expect(estimate(input({ work: listed([], NOW - 29_000) })).estimate).toEqual({ ms: 10_000, lowMs: 10_000, highMs: 10_000 })
+  expect(estimate(input({ work: listed([], NOW - 31_000) })).estimate).toBeNull()
+})
+
 test('a task list with every task done is one round, and none two rounds on', () => {
   const done = tasks(['completed', 'completed'])
   expect(estimate(input({ tasks: { list: done, kind: 'task' }, roundsSinceReport: 0 })).estimate).toEqual({ ms: 10_000, lowMs: 10_000, highMs: 10_000 })

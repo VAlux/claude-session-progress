@@ -94,16 +94,13 @@ export function appendLog(stored: unknown, row: LogRow, max = BOUNDS.log): LogRo
   return [...(Array.isArray(stored) ? stored.filter(isRow) : []), row].slice(-max)
 }
 
-/** Whether the store holds this version's data, or none yet. */
-async function isCurrent(store: Store): Promise<boolean> {
-  const version = await store.get(KEY.version)
-  return version === undefined || version === VERSION
-}
+/** Whether a stored version is this one's, or none yet. */
+const isCurrent = (version: unknown) => version === undefined || version === VERSION
 
 /** One project's history as stored; the seeds when the store cannot be read or holds another version. */
 export async function loadHistory(store: Store, project: string): Promise<History> {
   try {
-    if (!(await isCurrent(store))) return seeded()
+    if (!isCurrent(await store.get(KEY.version))) return seeded()
     return { sizes: readSizes(await store.get(KEY.sizes)), commands: readCommands(await store.get(KEY.commands), project) }
   } catch {
     return seeded()
@@ -129,8 +126,10 @@ export async function flushHistory(store: Store, project: string, pending: EtaPe
   // One read before any write: a retry merges from it again, so a pass that failed halfway is never counted twice.
   let stored: { sizes: unknown; commands: unknown; log: unknown }
   try {
-    const current = await isCurrent(store)
-    const get = async (key: string) => (current ? await store.get(key) : undefined)
+    const version = await store.get(KEY.version)
+    // A newer release's data (a dev copy beside an installed one) is read by that release alone, and never written over.
+    if (typeof version === 'number' && version > VERSION) return null
+    const get = async (key: string) => (isCurrent(version) ? await store.get(key) : undefined)
     stored = { sizes: await get(KEY.sizes), commands: await get(KEY.commands), log: await get(KEY.log) }
   } catch {
     return null
