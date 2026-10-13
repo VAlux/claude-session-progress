@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Color, Elements, EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AgentRun, Detail, Live, PlanFile, PlanTask, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
+import type { AgentRun, Detail, EtaPending, EtaTurn, Live, PlanFile, PlanTask, Spread, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
 import {
   ICONS,
   detailLines,
@@ -26,6 +26,8 @@ import {
   activityLabel,
   barCells,
   barSvg,
+  etaLabels,
+  fitLabel,
   hex,
   MUTED,
   pctLabel,
@@ -44,7 +46,24 @@ import {
   usd,
   type Palette,
 } from './frames'
-import { PROGRESS_SPEC, PROGRESS_TOOL, etaLine } from './report'
+import {
+  combine,
+  correction,
+  emptyPending,
+  estimate,
+  freshEta,
+  learnCommand,
+  learnItem,
+  learnTasks,
+  normalizeCommand,
+  paceOf,
+  runningSince,
+  tickEta,
+  type EtaInput,
+  type TaskKind,
+} from './eta'
+import { flushHistory, loadHistory, seeded, type History, type LogRow, type Store } from './history'
+import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, parseReport } from './report'
 
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
 const summary = atom({ plugin: 'session-progress', key: 'summary' } as const, null)
@@ -62,9 +81,18 @@ const tick = atom({ plugin: 'session-progress', key: 'tick' } as const, 0)
 const agents = atom({ plugin: 'session-progress', key: 'agents' } as const, [])
 const openStat = atom({ plugin: 'session-progress', key: 'openStat' } as const, null)
 const showAll = atom({ plugin: 'session-progress', key: 'showAll' } as const, false)
+const etaTurn = atom({ plugin: 'session-progress', key: 'eta' } as const, null)
 
 // What the settings turned on, read by the timers and hooks outside `register`. Module state: a reload sets it again.
 const config = { eta: true }
+// The countdown's history: read from the store when a session starts, refreshed by each write.
+let history: History = seeded()
+let project: string | null = null
+// Writes to the store, one after another, so two loops ending at once never drop each other's samples.
+let flushing: Promise<void> = Promise.resolve()
+
+/** The part of `$.store` the history uses, spelled out here: the host lets a hooks module make only the `$` calls it can see it make. */
+const storeOf = ($: Dollar): Store => ({ get: key => $.store.get(key), set: (key, value) => $.store.set(key, value) })
 
 // When a turn earns the band: a quick answer or a short Q/A never does.
 const SHOW_AFTER_MS = 20_000
@@ -161,6 +189,7 @@ const scene = {
   // What the bar's own label shows between redraws: the live percentage, or a fixed text (none while nothing is measured).
   showPct: false,
   label: '',
+  labelColor: MUTED,
   target: null as number | null,
   shown: 0,
   palette: ACCENT,
@@ -214,6 +243,7 @@ function freshAgent(id: string, startedAt: number): AgentRun {
     tokensOut: 0,
     detail: emptyDetail(),
     tasks: [],
+    ...(config.eta ? { eta: freshEta(startedAt) } : {}),
   }
 }
 
@@ -332,6 +362,103 @@ function bashReported(ran: unknown): number[] {
   return ledgerTasks(out)
 }
 
+/** Which samples a step list's entries take: a task list's, a plan's `### Task N:` headings', or a plan's boxes'. */
+const taskKind = (steps: Steps): TaskKind => (steps.source === null ? 'task' : steps.unit === 'tasks' ? 'planTask' : 'planStep')
+
+/** Reads the history once a session: at its start, or at a turn's when the session started before the mod. */
+async function ensureHistory($: Dollar) {
+  if (project !== null) return
+  try {
+    project = await $.session.root()
+  } catch {
+    project = ''
+  }
+  history = await loadHistory(storeOf($), project)
+}
+
+/** Writes a loop's samples after any write still under way. An interrupted loop's command times are not its commands' run times. */
+async function flush($: Dollar, pending: EtaPending, isAborted: boolean, row: LogRow | null) {
+  const kept = isAborted ? { ...pending, commands: {} } : pending
+  flushing = flushing
+    .then(async () => {
+      const written = await flushHistory(storeOf($), project ?? '', kept, await $.clock.now(), row)
+      if (written !== null) history = written
+    })
+    .catch(() => {})
+  await flushing
+}
+
+/** One loop's countdown worked out again: its finished tasks learned, its estimate made, its bar moved on. */
+function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], rounds: number, now: number, waitedOn: readonly (Spread | null)[] | null): EtaTurn {
+  const pace = paceOf(detail, eta.work)
+  const learned = tasks === null ? eta : learnTasks(eta, tasks.list, tasks.kind, now, pace, history.sizes)
+  const own = estimate({
+    now,
+    pace,
+    work: learned.work,
+    runningSince: runningSince(detail, learned.work),
+    tasks,
+    since: learned.since,
+    sizes: history.sizes,
+    commands: history.commands,
+    c: correction(learned.actual, learned.estimated),
+    roundsSinceReport: rounds - learned.lastReportRound,
+  })
+  return tickEta(learned, waitedOn === null ? own : { ...own, estimate: combine(own.estimate, waitedOn) }, now)
+}
+
+/** Every loop's countdown, again: the subagents' first, since a main turn waiting on them shows the longest of theirs. */
+async function refreshEta($: Dollar, now: number) {
+  if (!config.eta) return
+  await update($, agents, list =>
+    list.map(run =>
+      run.eta === undefined || !isRunning(run)
+        ? run
+        : { ...run, eta: refreshed(run.eta, detailOf(run), run.tasks.length > 0 ? { list: run.tasks, kind: 'task' } : null, run.steps, now, null) },
+    ),
+  )
+  const waitedOn = (await read($, agents)).filter(run => run.dispatchedByMain && isRunning(run)).map(run => run.eta?.last ?? null)
+  const l = await read($, live)
+  const steps = await readSteps($)
+  await update($, etaTurn, eta => {
+    if (eta === null) return eta
+    // After the turn's own end, only the subagents it waits on are left to estimate.
+    if (l === null) return tickEta(eta, { estimate: combine(null, waitedOn), items: [], source: null }, now)
+    return refreshed(eta, detailOf(l), steps.list.length > 0 ? { list: steps.list, kind: taskKind(steps) } : null, l.steps, now, waitedOn)
+  })
+}
+
+/** Takes in one of Claude's reports: its loop's list changes, a top item that finished is learned, the countdown is worked out again. */
+async function takeReport($: Dollar, agentId: string | undefined, input: Record<string, unknown>) {
+  const report = parseReport(input)
+  if (report === null) return
+  const now = await $.clock.now()
+  const take = (eta: EtaTurn, detail: Detail, rounds: number): EtaTurn => {
+    const { work, finished } = applyReport(eta.work, report, now)
+    const next = { ...eta, work, lastReportRound: rounds }
+    return finished === null ? next : learnItem(next, finished, now, paceOf(detail, eta.work), history.sizes)
+  }
+  if (agentId !== undefined) {
+    await updateAgent($, agentId, now, run => ({ ...run, eta: take(run.eta ?? freshEta(run.startedAt), detailOf(run), run.steps) }))
+  } else {
+    const l = await read($, live)
+    await update($, etaTurn, eta => (eta === null || l === null ? eta : take(eta, detailOf(l), l.steps)))
+  }
+  await refreshEta($, now)
+}
+
+/** A change to a task list or plan file is a report too, for the stale rule. */
+async function markReport($: Dollar, agentId: string | undefined, now: number) {
+  if (!config.eta) return
+  if (agentId !== undefined) {
+    await updateAgent($, agentId, now, run => (run.eta === undefined ? run : { ...run, eta: { ...run.eta, lastReportRound: run.steps } }))
+  } else {
+    const rounds = (await read($, live))?.steps ?? 0
+    await update($, etaTurn, eta => (eta === null ? eta : { ...eta, lastReportRound: rounds }))
+  }
+  await refreshEta($, now)
+}
+
 export function shouldShow(l: Live, now: number, planSize: number): boolean {
   const elapsed = now - l.startedAt
   if (elapsed >= SHOW_ALWAYS_AFTER_MS) return true
@@ -358,7 +485,7 @@ function paint($: Dollar) {
   if (scene.requestId === null || scene.barWidth <= 0) return
   const progress = scene.target === null ? null : scene.shown
   const label = scene.showPct ? pctLabel(scene.shown) : scene.label
-  const labelColor = scene.showPct ? scene.palette.base : MUTED
+  const labelColor = scene.showPct ? scene.palette.base : scene.labelColor
   const cells = barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor })
   $.ui.blit({ requestId: scene.requestId, key: BAR_KEY, cells }).catch(skipFrame)
   if (!scene.isFinishing) {
@@ -387,13 +514,16 @@ function startTicking($: Dollar) {
   tickTimer = $.clock.every(1000, async () => {
     const now = await $.clock.now()
     const plan = await readSteps($)
+    // A Progress list of two or more items counts as a plan for when the band appears.
+    const reported = (await read($, etaTurn))?.work?.items.length ?? 0
     let becameLong = false
     await update($, live, l => {
-      if (l === null || l.isLong || !shouldShow(l, now, plan.list.length)) return l
+      if (l === null || l.isLong || !shouldShow(l, now, Math.max(plan.list.length, reported))) return l
       becameLong = true
       return { ...l, isLong: true }
     })
     if (becameLong) startFrames($)
+    await refreshEta($, now)
     await update($, tick, n => n + 1)
   })
 }
@@ -457,11 +587,19 @@ export function showsStepRows(setting: StepRows, fromPlanFile: boolean): boolean
 export const register: Register = (on, options) => {
   const stepRows: StepRows = options.stepRows === 'always' || options.stepRows === 'never' ? options.stepRows : 'auto'
   config.eta = options.eta !== 'off'
+  // A fresh activation reads the history again, at the session's start or its first turn.
+  project = null
+  history = seeded()
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // The tool the countdown's reports come through; a reload registers it again, replacing it.
     if (config.eta) await $.tool.register(PROGRESS_SPEC).catch(() => {})
+    // The history is read afresh whenever a session starts or the mod reloads: another session may have added to it.
+    if (config.eta) {
+      project = null
+      await ensureHistory($)
+    }
     // A reload mid-turn: the state survived, the timers did not.
     const current = await read($, live)
     if (current !== null || (await read($, agents)).some(isRunning)) startTicking($)
@@ -486,9 +624,11 @@ export const register: Register = (on, options) => {
   ).catch(($, e, next) => next(e))
 
   // Claude's reports are answered here and never passed on: no other hook serves the mod's own tool.
-  on('tool.call', { tool: 'mcp__session-progress__progress' }, async ($, e, next) => (e.tool === PROGRESS_TOOL ? { result: 'ok' } : next(e))).catch(
-    () => ({ result: 'ok' }),
-  )
+  on('tool.call', { tool: 'mcp__session-progress__progress' }, async ($, e, next) => {
+    if (e.tool !== PROGRESS_TOOL) return next(e)
+    if (config.eta) await takeReport($, e.agentId, e as unknown as Record<string, unknown>)
+    return { result: 'ok' }
+  }).catch(() => ({ result: 'ok' }))
 
   // A report is for the band, not the transcript: its rows draw nothing.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
@@ -509,6 +649,9 @@ export const register: Register = (on, options) => {
     await update($, tasks, list => (list.length > 0 && list.every(t => t.status === 'completed') ? [] : list))
     await update($, planFile, plan => (plan !== null && stepsOf([], plan).progress === 1 ? null : plan))
     await update($, live, () => freshLive(e.turnId, now))
+    await ensureHistory($)
+    // A Progress list belongs to its turn: unlike a plan, it does not carry over.
+    await update($, etaTurn, () => (config.eta ? freshEta(now) : null))
     stopFrames()
     scene.isFinishing = false
     scene.palette = ACCENT
@@ -526,6 +669,7 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const step = {
       index: e.index,
+      startedAt,
       durationMs: now - startedAt,
       tools: result.toolUses.filter(use => use.name !== PROGRESS_TOOL).map(use => shortToolName(use.name)),
       tokensIn: stepIn,
@@ -573,7 +717,17 @@ export const register: Register = (on, options) => {
     const isAgent = e.tool === 'Agent' || String(e.tool) === 'Task'
     const now = await $.clock.now()
 
-    const call = { id: e.tool_use_id, tool: e.tool, label, agentId, startedAt: now, durationMs: null, status: 'running' as const }
+    const command = e.tool === 'Bash' && typeof input.command === 'string' ? normalizeCommand(input.command) : null
+    const call = {
+      id: e.tool_use_id,
+      tool: e.tool,
+      label,
+      agentId,
+      startedAt: now,
+      durationMs: null,
+      status: 'running' as const,
+      ...(command === null ? {} : { command }),
+    }
 
     if (agentId !== undefined) {
       await updateAgent($, agentId, now, run => ({
@@ -650,15 +804,29 @@ export const register: Register = (on, options) => {
         dispatchedByMain: !isSub,
       }))
     }
+    // A foreground command's time is how long it runs; a background one returns at once.
+    if (config.eta && command !== null && input.run_in_background !== true) {
+      const ms = ended - now
+      if (agentId !== undefined) await updateAgent($, agentId, ended, run => (run.eta === undefined ? run : { ...run, eta: learnCommand(run.eta, command, ms) }))
+      else await update($, etaTurn, eta => (eta === null ? eta : learnCommand(eta, command, ms)))
+    }
+    if (agentId !== undefined && !failed && PLAN_TOOLS.has(e.tool)) await markReport($, agentId, ended)
     if (!isLive) return ran
 
-    if (!failed && tracksPlanTool(e.tool, isSub)) await update($, tasks, list => applyPlanTool(list, input, ran.result))
+    if (!failed && tracksPlanTool(e.tool, isSub)) {
+      await update($, tasks, list => applyPlanTool(list, input, ran.result))
+      await markReport($, undefined, ended)
+    }
     if (!failed && e.tool === 'Bash') {
       const reported = bashReported(ran)
-      if (reported.length > 0) await update($, planFile, plan => (plan === null ? plan : withCompleted(plan, reported)))
+      if (reported.length > 0) {
+        await update($, planFile, plan => (plan === null ? plan : withCompleted(plan, reported)))
+        await markReport($, undefined, ended)
+      }
     }
     if (!failed && PLAN_FILE_TOOLS.has(e.tool) && path !== null && isMarkdown(path)) {
       await trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null)
+      await markReport($, undefined, ended)
     }
 
     return ran
@@ -667,7 +835,16 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) {
       const now = await $.clock.now()
-      await updateAgent($, e.agentId, now, run => ({ ...run, finishedAt: now, durationMs: e.durationMs, reason: e.reason, running: [] }))
+      const ended = (await read($, agents)).find(run => run.id === e.agentId)?.eta
+      await updateAgent($, e.agentId, now, run => ({
+        ...run,
+        finishedAt: now,
+        durationMs: e.durationMs,
+        reason: e.reason,
+        running: [],
+        ...(run.eta === undefined ? {} : { eta: { ...run.eta, pending: emptyPending() } }),
+      }))
+      if (ended !== undefined) await flush($, ended.pending, e.reason === 'aborted', null)
       if ((await read($, live)) === null && !(await read($, agents)).some(isRunning)) stopTicking()
       return next(e)
     }
@@ -677,6 +854,11 @@ export const register: Register = (on, options) => {
 
     const l = await read($, live)
     const plan = await readSteps($)
+    const eta = config.eta ? await read($, etaTurn) : null
+    // The first estimate against what followed, for a turn that answered with nothing left running.
+    const first = e.reason === 'answer' && waiting === 0 ? (eta?.first ?? null) : null
+    const verdict =
+      first === null ? null : { atMs: first.atMs, estimatedMs: first.ms, lowMs: first.lowMs, highMs: first.highMs, tookMs: Math.max(0, e.durationMs - first.atMs) }
     if (l !== null) {
       const usage = e.usage
       const tokensIn = Math.max(l.tokensIn, usage ? usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens : 0)
@@ -715,11 +897,13 @@ export const register: Register = (on, options) => {
           cost: l.cost ?? 0,
           model: usage?.model ?? l.model,
           detail: detailOf(l),
+          ...(eta !== null && eta.fill !== null ? { fill: eta.fill } : {}),
+          ...(verdict === null ? {} : { eta: verdict }),
         }
         await update($, summary, () => done)
         // Handed off to a background subagent, the work is not done: the bar keeps what the plan says.
         scene.palette = waiting > 0 ? ACCENT : e.reason === 'answer' ? DONE : e.reason === 'aborted' ? WARN : FAIL
-        scene.target = e.reason === 'answer' && waiting === 0 ? 1 : (plan.progress ?? scene.shown)
+        scene.target = e.reason === 'answer' && waiting === 0 ? 1 : (eta?.fill ?? plan.progress ?? scene.shown)
         scene.finishFrom = scene.shown
         scene.finishFrames = 0
         scene.isFinishing = true
@@ -727,6 +911,15 @@ export const register: Register = (on, options) => {
       } else {
         stopFrames()
       }
+    }
+    if (eta !== null) {
+      const row: LogRow | null =
+        first === null || verdict === null
+          ? null
+          : { at: await $.clock.now(), firstAtMs: verdict.atMs, estimatedMs: verdict.estimatedMs, lowMs: verdict.lowMs, highMs: verdict.highMs, tookMs: verdict.tookMs, source: first.source }
+      await flush($, eta.pending, e.reason === 'aborted', row)
+      // Waiting on subagents, the countdown goes on with theirs; otherwise it is done with.
+      await update($, etaTurn, x => (x === null || waiting === 0 ? null : { ...x, pending: emptyPending() }))
     }
     await update($, live, () => null)
     return next(e)
@@ -955,15 +1148,21 @@ export const register: Register = (on, options) => {
     const barWidth = Math.max(12, width - BAR_SLACK)
 
     if (showLive) {
-      const progress = steps.progress
+      const eta = config.eta ? await read($, etaTurn) : null
+      // With the countdown on, the bar follows its fill; without it, the share of the plan done.
+      const progress = config.eta ? (eta?.fill ?? null) : steps.progress
+      const isUp = eta !== null && eta.upUntil !== null && now < eta.upUntil
+      const labels = eta === null || eta.last === null ? [] : etaLabels(eta.last).map(text => (isUp ? `${text} ↑` : text))
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
-      const label = progress === null ? '' : pctLabel(progress)
+      const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : labels.length === 0 ? '' : isTerminal ? fitLabel(labels, barWidth) : labels[0]!
+      const labelColor = label === '' ? MUTED : isUp ? WARN.base : ACCENT.base
       // A last live draw can land after the turn ended: it must not repaint the finish orange.
       if (isTerminal && !scene.isFinishing) {
         scene.target = progress
         scene.palette = ACCENT
-        scene.showPct = progress !== null
+        scene.showPct = !config.eta && progress !== null
         scene.label = label
+        scene.labelColor = labelColor
       }
       if (isTerminal) scene.barWidth = barWidth
 
@@ -1010,11 +1209,7 @@ export const register: Register = (on, options) => {
         </Box>,
         // A fixed width, as the head row has: in a band laid out narrower than bodyColumns the bar would be squeezed and its last cells wrap.
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
-          {marks.bar(BAR_KEY, barWidth, progress === null ? null : isTerminal ? scene.shown : progress, t, ACCENT, {
-            shimmer: true,
-            label,
-            labelColor: progress === null ? MUTED : ACCENT.base,
-          })}
+          {marks.bar(BAR_KEY, barWidth, progress === null ? null : isTerminal ? scene.shown : progress, t, ACCENT, { shimmer: true, label, labelColor })}
         </Box>,
         statsRow('stats', stats),
       ]

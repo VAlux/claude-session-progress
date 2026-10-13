@@ -54,7 +54,8 @@ test('a short Q/A turn never shows the band', async ($, on) => {
   expect(await shows($, false, /Task complete/), 'shows /Task complete/ (working=false)').toBe(false)
 })
 
-test('a long planned turn shows progress, then a summary, then hides on the next turn', async ($, on) => {
+// The share done is the bar without the countdown; with it, the bar follows the estimate (tests/eta-band.test.tsx).
+test('a long planned turn shows progress, then a summary, then hides on the next turn', { options: { eta: 'off' } }, async ($, on) => {
   engineBottom(on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.turn.start({ text: 'build the feature', turnId: 't1' })

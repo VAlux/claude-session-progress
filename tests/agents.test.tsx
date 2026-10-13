@@ -81,7 +81,8 @@ test('a main turn that hands off to a background subagent does not claim the tas
   expect(await shows($, /Waiting for 1 subagent/)).toBe(true)
 })
 
-test("viewing a subagent's transcript shows that subagent's progress, not the main one's", async ($, on) => {
+// The share done is the bar without the countdown; with it, the bar follows the estimate (tests/eta-band.test.tsx).
+test("viewing a subagent's transcript shows that subagent's progress, not the main one's", { options: { eta: 'off' } }, async ($, on) => {
   engineBottom(on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await handOff($, clock)

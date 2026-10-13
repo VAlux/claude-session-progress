@@ -35,7 +35,7 @@ export type EtaTurn = {
   /** When the loop started. */
   startedAt: number
   work: Work | null
-  /** When each task or plan entry came into progress, by its id, and the ones already learned. */
+  /** When each task or plan entry came into progress, and the ones already learned: both keyed by each task's id and text (its `taskKey`). */
   since: Record<string, number>
   counted: string[]
   /** The estimate as last worked out, and each listed item's own: the time left on the one in progress, the median of the rest. */
@@ -136,6 +136,10 @@ export type Summary = {
   model: string | null
   /** The finished turn's details, which its stats still open onto. */
   detail?: Detail
+  /** Where the bar's fill got to, with the countdown on. */
+  fill?: number
+  /** The first estimate against what followed, for a turn that answered with nothing left running. */
+  eta?: { atMs: number; estimatedMs: number; lowMs: number; highMs: number; tookMs: number }
 }
 
 /**
@@ -163,6 +167,8 @@ export type AgentRun = {
   detail?: Detail
   /** Its own TodoWrite / TaskCreate list, which never replaces the main one. */
   tasks: Task[]
+  /** Its countdown, with the countdown on. Absent on a run kept from before it existed. */
+  eta?: EtaTurn
 }
 
 export type Totals = { turns: number; longTurns: number; totalMs: number; toolCalls: number; tokensIn: number; tokensOut: number; cost?: number }
@@ -186,6 +192,8 @@ declare module 'claude-code' {
       openStat: StatKind | null
       /** The open stat lists everything, not its latest few: set by pressing its `+N earlier` row. */
       showAll: boolean
+      /** The main turn's countdown: made at `turn.start`, kept past its end while it waits on subagents. */
+      eta: EtaTurn | null
     }
   }
 }

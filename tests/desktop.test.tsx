@@ -78,7 +78,8 @@ const todos = [
 ]
 
 for (const surface of SURFACES) {
-  test(`${surface}: a long planned turn shows progress, then a summary`, async ($, on) => {
+  // The share done is the bar without the countdown; with it, the bar follows the estimate (tests/eta-band.test.tsx).
+  test(`${surface}: a long planned turn shows progress, then a summary`, { options: { eta: 'off' } }, async ($, on) => {
     engineBottom(on)
     const clock = mock.clock(on, { now: 1_000_000 })
     await $.turn.start({ text: 'build the feature', turnId: 't1' })
@@ -111,7 +112,8 @@ for (const surface of SURFACES) {
   })
 }
 
-test('desktop: the band draws no Raster, and its bar is vector markup', async ($, on) => {
+// The share done is the bar without the countdown; with it, the bar follows the estimate (tests/eta-band.test.tsx).
+test('desktop: the band draws no Raster, and its bar is vector markup', { options: { eta: 'off' } }, async ($, on) => {
   engineBottom(on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.turn.start({ text: 'build it', turnId: 't1' })

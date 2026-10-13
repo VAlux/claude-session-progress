@@ -52,7 +52,8 @@ test('checkboxes are read outside fences only', () => {
   expect(items.filter(i => i.done).length).toBe(2)
 })
 
-test('a Markdown plan with checkboxes drives the bar when there is no task list', async ($, on) => {
+// The share done is the bar without the countdown; with it, the bar follows the estimate (tests/eta-band.test.tsx).
+test('a Markdown plan with checkboxes drives the bar when there is no task list', { options: { eta: 'off' } }, async ($, on) => {
   const file = { text: plan(2) }
   bottom(on, file)
   const clock = mock.clock(on, { now: 1_000_000 })

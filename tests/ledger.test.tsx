@@ -96,7 +96,8 @@ test('a task counts as done when the ledger says so or when all its boxes are ti
   expect(steps.progress).toBe(2 / 3)
 })
 
-test("a task-done line in a Bash call's output moves the bar to the next task", async ($, on) => {
+// The share done is the bar without the countdown; with it, the bar follows the estimate (tests/eta-band.test.tsx).
+test("a task-done line in a Bash call's output moves the bar to the next task", { options: { eta: 'off' } }, async ($, on) => {
   const files: Files = { '/repo/docs/plan.md': PLAN }
   bottom(on, files)
   const clock = mock.clock(on, { now: 1_000_000 })
