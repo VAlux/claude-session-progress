@@ -30,11 +30,39 @@ export type WorkItem = { do: string; size?: 's' | 'm' | 'l'; run?: string }
 /** A loop's Progress list: what is left in order, the item in progress first; what finished; and since when the top item has been on top. */
 export type Work = { items: WorkItem[]; finished: string[]; topSince: number }
 
+/** One loop's countdown, the main turn's or a subagent run's, kept whole so every band draws the same fill. */
+export type EtaTurn = {
+  /** When the loop started. */
+  startedAt: number
+  work: Work | null
+  /** When each task or plan entry came into progress, by its id, and the ones already learned. */
+  since: Record<string, number>
+  counted: string[]
+  /** The estimate as last worked out, and each listed item's own: the time left on the one in progress, the median of the rest. */
+  last: Spread | null
+  items: { key: string; ms: number }[]
+  /** The first estimate, for the summary: when it came, what it said, and what it rested on. */
+  first: (Spread & { atMs: number; source: 'progress' | 'tasks' | 'plan' }) | null
+  fill: number | null
+  lastTickAt: number
+  /** The loop's round count at its last report, for the stale rule. */
+  lastReportRound: number
+  /** Round-equivalents of the items finished so far, as they went and as estimated: what *c* is made of. */
+  actual: number
+  estimated: number
+  /** The value the label last showed, and until when its `↑` shows. */
+  shownMs: number | null
+  upUntil: number | null
+  pending: EtaPending
+}
+
 /** One tool call as a band's details list it; `agentId` marks a subagent's. */
 export type CallRecord = {
   id: string
   tool: string
   label: string
+  /** A Bash call's command as the countdown's history keys it. Absent on other tools and on a record kept from before it existed. */
+  command?: string
   agentId?: string
   startedAt: number
   durationMs: number | null
@@ -46,8 +74,8 @@ export type CallRecord = {
 /** Lines a file's writes added and removed; null where the change could not be measured (a notebook cell). */
 export type FileChange = { path: string; added: number | null; removed: number | null }
 
-/** One model request of a turn: what it asked to run and what it cost. */
-export type StepRecord = { index: number; durationMs: number; tools: string[]; tokensIn: number; tokensOut: number; stopReason: string | null }
+/** One model request of a turn: what it asked to run and what it cost. `startedAt` is absent on a record kept from before it existed. */
+export type StepRecord = { index: number; startedAt?: number; durationMs: number; tools: string[]; tokensIn: number; tokensOut: number; stopReason: string | null }
 
 /** What a band's stats open onto: the calls, files, reads, steps and subagents of one turn or one subagent's run. */
 export type Detail = {

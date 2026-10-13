@@ -1,6 +1,7 @@
 // The countdown's arithmetic: from samples of how long items took, how long the work left will take, and how far the bar has come.
 
-import type { SampleKind, Spread } from '../types'
+import type { CallRecord, Detail, EtaPending, EtaTurn, SampleKind, Spread, StepRecord, Task, Work, WorkItem } from '../types'
+import { shownMs } from './frames'
 
 export type Sizes = Record<SampleKind, number[]>
 
@@ -103,4 +104,188 @@ export function advanceFill(fill: number, dtMs: number, remainingMs: number | nu
   if (remainingMs === null || !(remainingMs > 0)) return fill
   const dt = Math.max(0, Math.min(dtMs, MAX_TICK_MS))
   return Math.max(fill, Math.min(FILL_CAP, fill + (1 - fill) * Math.min(1, dt / remainingMs)))
+}
+
+/** A command as the history keys it: trimmed, its spaces collapsed, a leading `cd <dir> &&` dropped, cut to 200 characters. */
+export function normalizeCommand(command: string): string {
+  return command
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/^cd (?:"[^"]*"|'[^']*'|\S+) && /, '')
+    .slice(0, 200)
+}
+
+/** Each completed round's wall time (a model request and the tools it ran), leaving out rounds that ran a `run` item's command. */
+export function roundTimes(steps: readonly StepRecord[], calls: readonly CallRecord[], runs: ReadonlySet<string>): number[] {
+  const out: number[] = []
+  for (let i = 0; i + 1 < steps.length; i++) {
+    const from = steps[i]!.startedAt
+    const to = steps[i + 1]!.startedAt
+    if (from === undefined || to === undefined || to <= from) continue
+    const ranRun = calls.some(c => c.command !== undefined && runs.has(c.command) && c.startedAt >= from && c.startedAt < to)
+    if (!ranRun) out.push(to - from)
+  }
+  return out
+}
+
+/** A loop's pace: its median round, or before any round has completed, its first request's own time. */
+export function paceOf(detail: Detail, work: Work | null): number | null {
+  const runs = new Set((work?.items ?? []).flatMap(item => (item.run === undefined ? [] : [normalizeCommand(item.run)])))
+  const times = roundTimes(detail.stepLog, detail.calls, runs).sort(byNumber)
+  if (times.length > 0) return quantile(times, 0.5)
+  const first = detail.stepLog[0]
+  return first !== undefined && first.durationMs > 0 ? first.durationMs : null
+}
+
+/** Since when the top item's command has been running, when the top item is a `run` and its command is. */
+export function runningSince(detail: Detail, work: Work | null): number | null {
+  const run = work?.items[0]?.run
+  if (run === undefined) return null
+  const command = normalizeCommand(run)
+  return [...detail.calls].reverse().find(c => c.status === 'running' && c.command === command)?.startedAt ?? null
+}
+
+/** Which kind of list an estimate's items come from: a task list, a plan's tasks, or a plan's steps. */
+export type TaskKind = 'task' | 'planTask' | 'planStep'
+/** Which report an estimate was worked out from: a Progress list, a task list, or a plan. */
+export type EtaSource = 'progress' | 'tasks' | 'plan'
+
+/** What a loop's estimate is worked out from. */
+export type EtaInput = {
+  now: number
+  pace: number | null
+  work: Work | null
+  /** Since when the top item's command has run, for a `run` item whose command is running. */
+  runningSince: number | null
+  tasks: { list: readonly Task[]; kind: TaskKind } | null
+  since: Readonly<Record<string, number>>
+  sizes: Sizes
+  commands: Readonly<Record<string, readonly number[]>>
+  c: number
+  roundsSinceReport: number
+}
+
+/** A loop's estimate, each item's own (the time left on the one in progress, the others' medians), and what it rests on. */
+export type EtaOutput = { estimate: Spread | null; items: { key: string; ms: number }[]; source: EtaSource | null }
+
+const NONE: EtaOutput = { estimate: null, items: [], source: null }
+
+/** A loop's estimate: a Progress list's when it has one, else its task list's or plan's, else none. */
+export function estimate(x: EtaInput): EtaOutput {
+  if (x.pace === null || !(x.pace > 0)) return NONE
+  const pace = x.pace
+  type Part = { key: string; basis: Basis; spentMs: number | null }
+  let parts: Part[]
+  let source: EtaSource
+  const work = x.work
+  if (work !== null) {
+    // Down to its answer, yet still at work: Claude no longer knows what is left.
+    if (work.items.length === 0 && x.roundsSinceReport >= 2) return NONE
+    source = 'progress'
+    parts = work.items.map((item, i) => ({
+      key: `work-${i}`,
+      basis: item.run !== undefined ? commandBasis(x.commands[normalizeCommand(item.run)], x.sizes.m, pace, x.c) : sizedBasis(x.sizes[item.size ?? 'm'], pace, x.c),
+      spentMs: i > 0 ? null : x.now - (item.run !== undefined && x.runningSince !== null ? x.runningSince : work.topSince),
+    }))
+  } else if (x.tasks !== null && x.tasks.list.length > 0) {
+    source = x.tasks.kind === 'task' ? 'tasks' : 'plan'
+    const basis = sizedBasis(x.sizes[x.tasks.kind], pace, x.c)
+    parts = x.tasks.list
+      .filter(task => task.status !== 'completed')
+      .map(task => ({ key: task.id, basis, spentMs: task.status === 'in_progress' ? x.now - (x.since[task.id] ?? x.now) : null }))
+  } else {
+    return NONE
+  }
+
+  const spreads: Spread[] = []
+  const items: EtaOutput['items'] = []
+  for (const part of parts) {
+    // Far past its range with no report for a while: Claude may simply have stopped reporting.
+    if (part.spentMs !== null && part.spentMs > spreadOf(part.basis).highMs && x.roundsSinceReport >= STALE_ROUNDS) return NONE
+    const spread = part.spentMs === null ? spreadOf(part.basis) : remainingOf(part.basis, part.spentMs, pace)
+    spreads.push(spread)
+    items.push({ key: part.key, ms: spread.ms })
+  }
+  const total = totalOf(spreads, pace)
+  return isUsable(total) ? { estimate: total, items, source } : NONE
+}
+
+/** A loop's samples before any are gathered. */
+export const emptyPending = (): EtaPending => ({ sizes: {}, commands: {} })
+
+/** A loop's countdown before anything is reported. */
+export function freshEta(startedAt: number): EtaTurn {
+  return {
+    startedAt,
+    work: null,
+    since: {},
+    counted: [],
+    last: null,
+    items: [],
+    first: null,
+    fill: null,
+    lastTickAt: startedAt,
+    lastReportRound: 0,
+    actual: 0,
+    estimated: 0,
+    shownMs: null,
+    upUntil: null,
+    pending: emptyPending(),
+  }
+}
+
+const median = (rounds: readonly number[]) => quantile([...rounds].sort(byNumber), 0.5)
+
+/** Adds one finished item's round-equivalents to its kind's samples, and to the sums *c* is made of. */
+function withFinished(eta: EtaTurn, kind: SampleKind, rounds: number, sizes: Sizes): EtaTurn {
+  if (!Number.isFinite(rounds) || !(rounds > 0)) return eta
+  return {
+    ...eta,
+    actual: eta.actual + rounds,
+    estimated: eta.estimated + median(sizes[kind]),
+    pending: { ...eta.pending, sizes: { ...eta.pending.sizes, [kind]: [...(eta.pending.sizes[kind] ?? []), rounds] } },
+  }
+}
+
+/** Learns a Progress item that finished on its own: a sized one's time goes to its size; a `run` item's is learned from its Bash call. */
+export function learnItem(eta: EtaTurn, finished: { item: WorkItem; since: number }, now: number, pace: number | null, sizes: Sizes): EtaTurn {
+  if (finished.item.run !== undefined || pace === null || !(pace > 0)) return eta
+  return withFinished(eta, finished.item.size ?? 'm', (now - finished.since) / pace, sizes)
+}
+
+/** Notes when each task came into progress, and learns the ones that finished since, each once. */
+export function learnTasks(eta: EtaTurn, list: readonly Task[], kind: TaskKind, now: number, pace: number | null, sizes: Sizes): EtaTurn {
+  let out = eta
+  for (const task of list) {
+    const since = out.since[task.id]
+    if (task.status === 'in_progress' && since === undefined) {
+      out = { ...out, since: { ...out.since, [task.id]: now } }
+    } else if (task.status === 'completed' && since !== undefined && !out.counted.includes(task.id)) {
+      out = { ...out, counted: [...out.counted, task.id] }
+      if (pace !== null && pace > 0) out = withFinished(out, kind, (now - since) / pace, sizes)
+    }
+  }
+  return out
+}
+
+/** Adds a Bash call's time to its command's runs, keeping the last 10. */
+export function learnCommand(eta: EtaTurn, command: string, ms: number): EtaTurn {
+  if (command === '' || !(ms > 0)) return eta
+  const runs = [...(eta.pending.commands[command] ?? []), ms].slice(-10)
+  return { ...eta, pending: { ...eta.pending, commands: { ...eta.pending.commands, [command]: runs } } }
+}
+
+/** How long the label's `↑` shows after the estimate grows. */
+export const UP_MS = 5_000
+
+/** A loop's countdown after one more look: the estimate kept, the first one noted, the bar moved on, and the `↑` set when it grew. */
+export function tickEta(eta: EtaTurn, out: EtaOutput, now: number): EtaTurn {
+  const last = out.estimate
+  const elapsed = now - eta.startedAt
+  const first =
+    eta.first ?? (last === null || out.source === null ? null : { atMs: Math.max(0, elapsed), ms: last.ms, lowMs: last.lowMs, highMs: last.highMs, source: out.source })
+  const fill = last === null ? eta.fill : eta.fill === null ? startFill(elapsed, last.ms) : advanceFill(eta.fill, now - eta.lastTickAt, last.ms)
+  const shown = last === null ? null : shownMs(last.ms)
+  const grew = shown !== null && eta.shownMs !== null && shown > eta.shownMs
+  return { ...eta, last, items: out.items, first, fill, lastTickAt: now, shownMs: shown ?? eta.shownMs, upUntil: grew ? now + UP_MS : eta.upUntil }
 }

@@ -6,15 +6,27 @@ import {
   combine,
   commandBasis,
   correction,
+  estimate,
+  freshEta,
   isUsable,
+  learnCommand,
+  learnItem,
+  learnTasks,
+  normalizeCommand,
+  paceOf,
   quantile,
   remainingOf,
+  roundTimes,
+  runningSince,
   sizedBasis,
   spreadOf,
   startFill,
+  tickEta,
   totalOf,
+  type EtaInput,
 } from '../hooks/eta'
 import { capitalize, etaLabels, etaRange, etaValue, fitLabel, shownMs } from '../hooks/frames'
+import type { CallRecord, Detail, StepRecord, Task } from '../types'
 
 const PACE = 10_000
 const round = (s: { ms: number; lowMs: number; highMs: number }) => ({ ms: Math.round(s.ms), lowMs: Math.round(s.lowMs), highMs: Math.round(s.highMs) })
@@ -126,4 +138,133 @@ test('the label that fits leaves the bar 20 cells, and the shortest goes when no
   expect(fitLabel(labels, 22)).toBe('~4m')
   expect(fitLabel([], 80)).toBe('')
   expect(capitalize('fix the parser')).toBe('Fix the parser')
+})
+
+test('a command is keyed trimmed, its spaces collapsed, a leading cd dropped, cut to 200 characters', () => {
+  expect(normalizeCommand('  npm   test ')).toBe('npm test')
+  expect(normalizeCommand('cd /repo && npm test')).toBe('npm test')
+  expect(normalizeCommand('cd "/a b" && make')).toBe('make')
+  expect(normalizeCommand('x'.repeat(300))).toHaveLength(200)
+})
+
+const step = (index: number, startedAt: number, durationMs = 1_000): StepRecord => ({ index, startedAt, durationMs, tools: [], tokensIn: 0, tokensOut: 0, stopReason: null })
+const call = (startedAt: number, command: string, status: CallRecord['status'] = 'ok'): CallRecord => ({ id: `c${startedAt}`, tool: 'Bash', label: command, command, startedAt, durationMs: 1, status })
+const detail = (stepLog: StepRecord[], calls: CallRecord[] = []): Detail => ({ calls, files: [], reads: [], stepLog, agentIds: [] })
+
+test("the pace is the median round, leaving out rounds that ran a run item's command", () => {
+  const steps = [step(0, 0), step(1, 10_000), step(2, 30_000), step(3, 31_000)]
+  expect(roundTimes(steps, [], new Set())).toEqual([10_000, 20_000, 1_000])
+  expect(roundTimes(steps, [call(12_000, 'npm test')], new Set(['npm test']))).toEqual([10_000, 1_000])
+  expect(paceOf(detail(steps), null)).toBe(10_000)
+  expect(paceOf(detail(steps, [call(12_000, 'npm test')]), { items: [{ do: 'test', run: 'npm test' }], finished: [], topSince: 0 })).toBe(5_500)
+  expect(paceOf(detail([step(0, 0, 4_000)]), null), 'before a round has completed, the first request').toBe(4_000)
+  expect(paceOf(detail([]), null)).toBeNull()
+})
+
+test("a run item's command, while it runs, is timed from when it started", () => {
+  const work = { items: [{ do: 'test', run: 'npm  test' }], finished: [], topSince: 0 }
+  expect(runningSince(detail([], [call(5_000, 'npm test', 'running')]), work)).toBe(5_000)
+  expect(runningSince(detail([], [call(5_000, 'npm test')]), work)).toBeNull()
+  expect(runningSince(detail([], [call(5_000, 'npm test', 'running')]), null)).toBeNull()
+})
+
+const NOW = 1_000_000
+const input = (over: Partial<EtaInput>): EtaInput => ({
+  now: NOW,
+  pace: 10_000,
+  work: null,
+  runningSince: null,
+  tasks: null,
+  since: {},
+  sizes: SEEDS,
+  commands: {},
+  c: 1,
+  roundsSinceReport: 0,
+  ...over,
+})
+const rounded = (s: { ms: number; lowMs: number; highMs: number } | null) => s && { ms: Math.round(s.ms), lowMs: Math.round(s.lowMs), highMs: Math.round(s.highMs) }
+const listed = (items: { do: string; size?: 's' | 'm' | 'l'; run?: string }[], topSince = NOW) => ({ items, finished: [], topSince })
+
+test("a Progress list's estimate: the item in progress, the rest's medians, a round for the answer", () => {
+  const out = estimate(input({ work: listed([{ do: 'a', size: 'm' }, { do: 'b', size: 's' }]) }))
+  expect(rounded(out.estimate)).toEqual({ ms: 80_000, lowMs: 66_584, highMs: 108_636 })
+  expect(out.items).toEqual([{ key: 'work-0', ms: 50_000 }, { key: 'work-1', ms: 20_000 }])
+  expect(out.source).toBe('progress')
+  expect(estimate(input({ pace: null, work: listed([{ do: 'a' }]) })).estimate, 'no pace, no estimate').toBeNull()
+  expect(estimate(input({})).estimate, 'nothing reported, no estimate').toBeNull()
+  expect(rounded(estimate(input({ work: listed([{ do: 'a', size: 'm' }, { do: 'b', size: 's' }], NOW + 5_000) })).estimate)?.ms, 'a clock behind the item').toBe(80_000)
+  expect(Math.round(estimate(input({ work: listed([{ do: 'a', size: 'm' }]), c: correction(6, 2) })).estimate?.ms ?? 0)).toBe(76_667)
+})
+
+test("a run item is its command's times, timed from when the command started", () => {
+  const work = listed([{ do: 'test', run: 'npm test' }])
+  const commands = { 'npm test': [180_000, 190_000, 200_000] }
+  expect(estimate(input({ work, commands })).estimate).toEqual({ ms: 200_000, lowMs: 105_000, highMs: 390_000 })
+  expect(estimate(input({ work, commands, runningSince: NOW - 60_000 })).estimate?.ms).toBe(140_000)
+})
+
+const tasks = (statuses: Task['status'][]): Task[] => statuses.map((status, i) => ({ id: `todo-${i}`, subject: `task ${i}`, status }))
+
+test("a task list's estimate: the task in progress from when it began, the pending ones' medians", () => {
+  const out = estimate(input({ tasks: { list: tasks(['completed', 'in_progress', 'pending']), kind: 'task' }, since: { 'todo-1': NOW - 20_000 } }))
+  expect(out.estimate?.ms).toBe(90_000)
+  expect(out.source).toBe('tasks')
+  expect(out.items.map(i => i.key)).toEqual(['todo-1', 'todo-2'])
+  expect(estimate(input({ tasks: { list: tasks(['pending', 'pending']), kind: 'planStep' } })).source).toBe('plan')
+})
+
+test('an item far past its range with no report for 8 rounds loses its estimate', () => {
+  const late = { tasks: { list: tasks(['in_progress']), kind: 'task' as const }, since: { 'todo-0': NOW - 80_000 } }
+  expect(estimate(input({ ...late, roundsSinceReport: 7 })).estimate?.ms).toBe(30_000)
+  expect(estimate(input({ ...late, roundsSinceReport: 8 })).estimate).toBeNull()
+})
+
+test('down to its answer, a list is one round; two rounds later, with Claude still at work, it is none', () => {
+  expect(estimate(input({ work: listed([]), roundsSinceReport: 0 })).estimate).toEqual({ ms: 10_000, lowMs: 10_000, highMs: 10_000 })
+  expect(estimate(input({ work: listed([]), roundsSinceReport: 2 })).estimate).toBeNull()
+})
+
+test('a finished sized item is learned in round-equivalents, and adds to c; a run item is not', () => {
+  const eta = learnItem(freshEta(0), { item: { do: 'a', size: 's' }, since: 0 }, 30_000, 10_000, SEEDS)
+  expect(eta.pending.sizes.s).toEqual([3])
+  expect(eta.actual).toBe(3)
+  expect(eta.estimated).toBe(2)
+  expect(learnItem(freshEta(0), { item: { do: 'test', run: 'npm test' }, since: 0 }, 30_000, 10_000, SEEDS).pending.sizes).toEqual({})
+  expect(learnItem(freshEta(0), { item: { do: 'a' }, since: 0 }, 30_000, 10_000, SEEDS).pending.sizes.m, 'unsized counts as m').toEqual([3])
+  expect(learnItem(freshEta(0), { item: { do: 'a' }, since: 0 }, 30_000, null, SEEDS).pending.sizes).toEqual({})
+})
+
+test('a task is timed from when it came into progress to when it finished, once', () => {
+  const started = learnTasks(freshEta(0), tasks(['in_progress', 'pending']), 'task', 1_000, 10_000, SEEDS)
+  expect(started.since).toEqual({ 'todo-0': 1_000 })
+  const finished = learnTasks(started, tasks(['completed', 'in_progress']), 'task', 41_000, 10_000, SEEDS)
+  expect(finished.pending.sizes.task).toEqual([4])
+  expect(finished.since['todo-1']).toBe(41_000)
+  const again = learnTasks(finished, tasks(['completed', 'in_progress']), 'task', 50_000, 10_000, SEEDS)
+  expect(again.pending.sizes.task, 'never learned twice').toEqual([4])
+  expect(learnTasks(freshEta(0), tasks(['completed']), 'task', 1_000, 10_000, SEEDS).pending.sizes, 'one never seen in progress').toEqual({})
+})
+
+test("a Bash call's time joins its command's runs, the last 10 kept", () => {
+  let eta = freshEta(0)
+  for (let i = 1; i <= 12; i++) eta = learnCommand(eta, 'npm test', i * 1_000)
+  expect(eta.pending.commands['npm test']).toEqual([3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000, 12_000])
+  expect(learnCommand(freshEta(0), 'npm test', 0).pending.commands).toEqual({})
+})
+
+test('each look keeps the estimate, notes the first, moves the bar on, and marks a growing one', () => {
+  const out = (ms: number | null) => ({ estimate: ms === null ? null : { ms, lowMs: ms / 2, highMs: ms * 2 }, items: [], source: 'progress' as const })
+  const one = tickEta(freshEta(NOW), out(80_000), NOW + 10_000)
+  expect(one.first).toEqual({ atMs: 10_000, ms: 80_000, lowMs: 40_000, highMs: 160_000, source: 'progress' })
+  expect(Math.round((one.fill ?? 0) * 1000)).toBe(111)
+  expect(one.shownMs).toBe(80_000)
+  const two = tickEta(one, out(79_000), NOW + 11_000)
+  expect(Math.round((two.fill ?? 0) * 1000)).toBe(122)
+  expect(two.upUntil).toBeNull()
+  const grown = tickEta(two, out(200_000), NOW + 12_000)
+  expect(grown.upUntil).toBe(NOW + 17_000)
+  expect(grown.first?.ms, 'the first estimate stays the first').toBe(80_000)
+  const lost = tickEta(grown, out(null), NOW + 13_000)
+  expect(lost.last).toBeNull()
+  expect(lost.fill, 'with no estimate the bar holds').toBe(grown.fill)
 })
