@@ -168,6 +168,50 @@ export function duration(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
 
+/** The countdown rounded to the unit its label shows: whole minutes from 2 minutes, 10 s steps under them, 0 under 10 s. */
+export function shownMs(ms: number): number {
+  if (ms >= 120_000) return Math.round(ms / 60_000) * 60_000
+  if (ms >= 10_000) return Math.round(ms / 10_000) * 10_000
+  return 0
+}
+
+/** The countdown's value as its label reads: `~4m`, `~1m 30s`, `~40s`, or `a few seconds`. */
+export function etaValue(ms: number): string {
+  const shown = shownMs(ms)
+  if (shown === 0) return 'a few seconds'
+  if (ms >= 120_000) return `~${shown / 60_000}m`
+  const m = Math.floor(shown / 60_000)
+  const s = (shown % 60_000) / 1000
+  if (m === 0) return `~${s}s`
+  return s === 0 ? `~${m}m` : `~${m}m ${s}s`
+}
+
+/** The range after a countdown of 2 minutes or more, ` (3–6m)`; null under 2 minutes or when its ends round to the same minute. */
+export function etaRange(est: { ms: number; lowMs: number; highMs: number }): string | null {
+  if (est.ms < 120_000) return null
+  const lo = Math.max(1, Math.round(est.lowMs / 60_000))
+  const hi = Math.round(est.highMs / 60_000)
+  return hi > lo ? ` (${lo}–${hi}m)` : null
+}
+
+/** The countdown's labels, longest first: with its range, without it, the value alone. */
+export function etaLabels(est: { ms: number; lowMs: number; highMs: number }): string[] {
+  const value = etaValue(est.ms)
+  const range = etaRange(est)
+  return range === null ? [`${value} left`, value] : [`${value} left${range}`, `${value} left`, value]
+}
+
+/** The cells a bar keeps for its track beside its label. */
+export const MIN_BAR_CELLS = 20
+
+/** The longest label that leaves the bar its track in `width` cells, or the shortest when none does. */
+export function fitLabel(labels: readonly string[], width: number): string {
+  return labels.find(label => width - label.length - 1 >= MIN_BAR_CELLS) ?? labels[labels.length - 1] ?? ''
+}
+
+/** The text with its first letter in capitals. */
+export const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
 export function tokens(n: number): string {
   if (n < 1000) return String(n)
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`

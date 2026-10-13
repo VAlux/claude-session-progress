@@ -14,6 +14,7 @@ import {
   startFill,
   totalOf,
 } from '../hooks/eta'
+import { capitalize, etaLabels, etaRange, etaValue, fitLabel, shownMs } from '../hooks/frames'
 
 const PACE = 10_000
 const round = (s: { ms: number; lowMs: number; highMs: number }) => ({ ms: Math.round(s.ms), lowMs: Math.round(s.lowMs), highMs: Math.round(s.highMs) })
@@ -89,4 +90,40 @@ test('the bar starts at the share done, moves to reach the end with the countdow
   expect(advanceFill(0.96, 5_000, 1_000)).toBe(0.97)
   expect(advanceFill(0, 3_600_000, 100_000), 'a long gap moves it 5 s worth').toBe(0.05)
   expect(advanceFill(0.99, 1_000, 10_000), 'past the cap it never goes back').toBe(0.99)
+})
+
+test('the countdown reads in whole minutes from 2 minutes, in 10 s steps under them, and as a few seconds at the end', () => {
+  expect(etaValue(240_000)).toBe('~4m')
+  expect(etaValue(245_000)).toBe('~4m')
+  expect(etaValue(125_000)).toBe('~2m')
+  expect(etaValue(115_000), 'rounds up into the minutes').toBe('~2m')
+  expect(etaValue(90_000)).toBe('~1m 30s')
+  expect(etaValue(60_000)).toBe('~1m')
+  expect(etaValue(40_000)).toBe('~40s')
+  expect(etaValue(9_000)).toBe('a few seconds')
+  expect(etaValue(5_700_000)).toBe('~95m')
+  expect(shownMs(79_000)).toBe(80_000)
+  expect(shownMs(150_000)).toBe(180_000)
+})
+
+test('the range follows from 2 minutes, unless its ends round to the same minute', () => {
+  expect(etaRange({ ms: 240_000, lowMs: 180_000, highMs: 360_000 })).toBe(' (3–6m)')
+  expect(etaRange({ ms: 240_000, lowMs: 230_000, highMs: 250_000 })).toBeNull()
+  expect(etaRange({ ms: 90_000, lowMs: 30_000, highMs: 200_000 })).toBeNull()
+  expect(etaRange({ ms: 150_000, lowMs: 10_000, highMs: 300_000 }), 'the low end is at least a minute').toBe(' (1–5m)')
+})
+
+test('the labels go from the fullest to the value alone', () => {
+  expect(etaLabels({ ms: 240_000, lowMs: 180_000, highMs: 360_000 })).toEqual(['~4m left (3–6m)', '~4m left', '~4m'])
+  expect(etaLabels({ ms: 80_000, lowMs: 66_000, highMs: 108_000 })).toEqual(['~1m 20s left', '~1m 20s'])
+  expect(etaLabels({ ms: 5_000, lowMs: 5_000, highMs: 5_000 })).toEqual(['a few seconds left', 'a few seconds'])
+})
+
+test('the label that fits leaves the bar 20 cells, and the shortest goes when none does', () => {
+  const labels = ['~4m left (3–6m)', '~4m left', '~4m']
+  expect(fitLabel(labels, 80)).toBe('~4m left (3–6m)')
+  expect(fitLabel(labels, 30)).toBe('~4m left')
+  expect(fitLabel(labels, 22)).toBe('~4m')
+  expect(fitLabel([], 80)).toBe('')
+  expect(capitalize('fix the parser')).toBe('Fix the parser')
 })
