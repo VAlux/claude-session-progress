@@ -26,7 +26,7 @@ import {
   totalOf,
   type EtaInput,
 } from '../hooks/eta'
-import { capitalize, etaLabels, etaRange, etaValue, fitLabel, shownMs } from '../hooks/frames'
+import { capitalize, countdownLabel, etaLabels, etaRange, etaValue, fitLabel, isGrowing, shownMs } from '../hooks/frames'
 import type { CallRecord, Detail, StepRecord, Task } from '../types'
 
 const PACE = 10_000
@@ -139,6 +139,18 @@ test('the label that fits leaves the bar 20 cells, and the shortest goes when no
   expect(fitLabel(labels, 22)).toBe('~4m')
   expect(fitLabel([], 80)).toBe('')
   expect(capitalize('fix the parser')).toBe('Fix the parser')
+})
+
+test('a countdown label is the fullest that fits on the terminal, the whole one on the desktop, and carries ↑ while it grows', () => {
+  const est = { ms: 240_000, lowMs: 180_000, highMs: 360_000 }
+  expect(isGrowing(null, 5)).toBe(false)
+  expect(isGrowing(10, 5)).toBe(true)
+  expect(isGrowing(10, 10)).toBe(false)
+  expect(countdownLabel(null, false, true, 80)).toBe('')
+  expect(countdownLabel(est, false, true, 80)).toBe('~4m left (3–6m)')
+  expect(countdownLabel(est, false, true, 30)).toBe('~4m left')
+  expect(countdownLabel(est, false, false, 30)).toBe('~4m left (3–6m)')
+  expect(countdownLabel(est, true, true, 80)).toBe('~4m left (3–6m) ↑')
 })
 
 test('a command is keyed trimmed, its spaces collapsed, a leading cd dropped, cut to 200 characters', () => {

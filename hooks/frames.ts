@@ -209,6 +209,16 @@ export function fitLabel(labels: readonly string[], width: number): string {
   return labels.find(label => width - label.length - 1 >= MIN_BAR_CELLS) ?? labels[labels.length - 1] ?? ''
 }
 
+/** Whether a countdown grew a moment ago, so its label shows `↑`. */
+export const isGrowing = (upUntil: number | null | undefined, now: number) => upUntil !== null && upUntil !== undefined && now < upUntil
+
+/** A countdown's label on a bar of `width` cells, `↑` after it while it has just grown: the fullest that fits on the terminal, the whole one on the desktop. */
+export function countdownLabel(est: { ms: number; lowMs: number; highMs: number } | null, isUp: boolean, isTerminal: boolean, width: number): string {
+  if (est === null) return ''
+  const labels = etaLabels(est).map(text => (isUp ? `${text} ↑` : text))
+  return isTerminal ? fitLabel(labels, width) : labels[0]!
+}
+
 /** The text with its first letter in capitals. */
 export const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 

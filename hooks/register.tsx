@@ -27,11 +27,11 @@ import {
   barCells,
   barSvg,
   capitalize,
-  etaLabels,
+  countdownLabel,
   etaRange,
   etaValue,
-  fitLabel,
   hex,
+  isGrowing,
   MUTED,
   pctLabel,
   duration,
@@ -1082,11 +1082,9 @@ export const register: Register = (on, options) => {
       const elapsed = isDone ? (run.durationMs ?? (run.finishedAt ?? now) - run.startedAt) : now - run.startedAt
       const doneCount = list.filter(task => task.status === 'completed').length
       const barWidth = Math.max(12, width - BAR_SLACK)
-      const isUp = !isDone && runEta !== undefined && runEta.upUntil !== null && now < runEta.upUntil
-      const labels = isDone || runEta === undefined || runEta.last === null ? [] : etaLabels(runEta.last).map(text => (isUp ? `${text} ↑` : text))
+      const isUp = !isDone && isGrowing(runEta?.upUntil, now)
       // Running with the countdown on, the label counts down; finished, or without it, it is the share done.
-      const label =
-        config.eta && !isDone ? (labels.length === 0 ? '' : isTerminal ? fitLabel(labels, barWidth) : labels[0]!) : progress === null ? '' : pctLabel(progress)
+      const label = config.eta && !isDone ? countdownLabel(runEta?.last ?? null, isUp, isTerminal, barWidth) : progress === null ? '' : pctLabel(progress)
       const labelColor = label === '' ? MUTED : isUp ? WARN.base : palette.base
       const detail = detailOf(run)
       const stats = [
@@ -1177,10 +1175,9 @@ export const register: Register = (on, options) => {
       const eta = config.eta ? await read($, etaTurn) : null
       // With the countdown on, the bar follows its fill; without it, the share of the plan done.
       const progress = config.eta ? (eta?.fill ?? null) : steps.progress
-      const isUp = eta !== null && eta.upUntil !== null && now < eta.upUntil
-      const labels = eta === null || eta.last === null ? [] : etaLabels(eta.last).map(text => (isUp ? `${text} ↑` : text))
+      const isUp = isGrowing(eta?.upUntil, now)
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
-      const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : labels.length === 0 ? '' : isTerminal ? fitLabel(labels, barWidth) : labels[0]!
+      const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth)
       const labelColor = label === '' ? MUTED : isUp ? WARN.base : ACCENT.base
       // A last live draw can land after the turn ended: it must not repaint the finish orange.
       if (isTerminal && !scene.isFinishing) {
@@ -1299,19 +1296,19 @@ export const register: Register = (on, options) => {
     const isEasing = isTerminal && scene.isFinishing
     // Waiting with nothing to measure, the bar sweeps rather than settle on a number it does not have.
     const barProgress = waiting > 0 && held === null ? null : isEasing ? scene.shown : (finalProgress ?? 0)
-    const isUp = eta !== null && eta.upUntil !== null && now < eta.upUntil
-    const waitLabels = waiting > 0 && eta !== null && eta.last !== null ? etaLabels(eta.last).map(text => (isUp ? `${text} ↑` : text)) : []
-    const waitLabel = waitLabels.length === 0 ? null : isTerminal ? fitLabel(waitLabels, barWidth) : waitLabels[0]!
+    // Only a wait counts down here, so a ↑ from it must not tint a settled finish.
+    const isUp = waiting > 0 && isGrowing(eta?.upUntil, now)
+    const waitLabel = waiting > 0 ? countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth) : ''
     // A wait with the countdown on shows the subagents' countdown or nothing: never a share it does not have.
     const isCounting = config.eta && waiting > 0
     if (isTerminal) {
       scene.barWidth = barWidth
       scene.palette = palette
       scene.showPct = !isCounting && finalProgress !== null
-      scene.label = waitLabel ?? ''
+      scene.label = waitLabel
       scene.labelColor = isUp ? WARN.base : palette.base
     }
-    const label = waitLabel ?? (isCounting || finalProgress === null || barProgress === null ? '' : pctLabel(barProgress))
+    const label = waitLabel !== '' ? waitLabel : isCounting || finalProgress === null || barProgress === null ? '' : pctLabel(barProgress)
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0
 
     const detail = detailOf(sum)

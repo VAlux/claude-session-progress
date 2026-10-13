@@ -361,14 +361,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('waiting on a subagent that never reported shows no countdown', async ($, on) => {
-  const clock = await withSubagent($, on)
-  await clock.advance(11_000)
-  await $.turn.complete(done('t1', 21_000))
-  await clock.advance(2_000)
-  const shown = await seen($, 'terminal', false)
-  expect(has(shown, /Waiting for 1 subagent/)).toBe(true)
-  expect(has(shown, /left/)).toBe(false)
+test('a main turn with its own countdown shows none once it waits on a subagent that has none', async ($, on) => {
+  engineBottom(on)
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'review the branch', turnId: 't1' })
+  await round($, 0)
+  await clock.advance(10_000)
+  await round($, 1)
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /~1m 20s left/), 'its own countdown first').toBe(true)
+  await $.tool.call({ tool: 'Agent', description: 'Review the branch', prompt: 'Review it.', subagent_type: 'general-purpose' })
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /left/)).toBe(false)
 })
 
 test('the summary compares the first estimate with what followed', async ($, on) => {
