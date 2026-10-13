@@ -44,6 +44,7 @@ import {
   usd,
   type Palette,
 } from './frames'
+import { PROGRESS_SPEC, PROGRESS_TOOL, etaLine } from './report'
 
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
 const summary = atom({ plugin: 'session-progress', key: 'summary' } as const, null)
@@ -61,6 +62,9 @@ const tick = atom({ plugin: 'session-progress', key: 'tick' } as const, 0)
 const agents = atom({ plugin: 'session-progress', key: 'agents' } as const, [])
 const openStat = atom({ plugin: 'session-progress', key: 'openStat' } as const, null)
 const showAll = atom({ plugin: 'session-progress', key: 'showAll' } as const, false)
+
+// What the settings turned on, read by the timers and hooks outside `register`. Module state: a reload sets it again.
+const config = { eta: true }
 
 // When a turn earns the band: a quick answer or a short Q/A never does.
 const SHOW_AFTER_MS = 20_000
@@ -452,20 +456,45 @@ export function showsStepRows(setting: StepRows, fromPlanFile: boolean): boolean
 
 export const register: Register = (on, options) => {
   const stepRows: StepRows = options.stepRows === 'always' || options.stepRows === 'never' ? options.stepRows : 'auto'
+  config.eta = options.eta !== 'off'
 
   on('session.start', async ($, e, next) => {
+    const started = await next(e)
+    // The tool the countdown's reports come through; a reload registers it again, replacing it.
+    if (config.eta) await $.tool.register(PROGRESS_SPEC).catch(() => {})
     // A reload mid-turn: the state survived, the timers did not.
     const current = await read($, live)
     if (current !== null || (await read($, agents)).some(isRunning)) startTicking($)
     if (current?.isLong) startFrames($)
-    return next(e)
+    return started
   })
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
-    const text = taskListLine(e.tools)
-    if (text === null) return composed
-    return { ...composed, sections: [...composed.sections, { id: 'session-progress:task-list', text, scope: 'session' as const }] }
+    const lines = [
+      { id: 'session-progress:task-list', text: taskListLine(e.tools) },
+      { id: 'session-progress:eta', text: config.eta ? etaLine(e.tools) : null },
+    ].filter((line): line is { id: string; text: string } => line.text !== null)
+    if (lines.length === 0) return composed
+    return { ...composed, sections: [...composed.sections, ...lines.map(line => ({ ...line, scope: 'session' as const }))] }
+  }).catch(($, e, next) => next(e))
+
+  // The mod's own tool runs without asking: it only feeds the band.
+  on('tool.check', { tool: PROGRESS_TOOL }, async () => ({ decision: 'allow' as const })).catch(($, e, next) => next(e))
+
+  // Claude's reports are answered here and never passed on: no other hook serves the mod's own tool.
+  on('tool.call', { tool: PROGRESS_TOOL }, async () => ({ result: 'ok' })).catch(() => ({ result: 'ok' }))
+
+  // A report is for the band, not the transcript: its rows draw nothing.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.tool !== PROGRESS_TOOL) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }).catch(($, e, next) => next(e))
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.props.tool !== PROGRESS_TOOL) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
@@ -493,7 +522,7 @@ export const register: Register = (on, options) => {
     const step = {
       index: e.index,
       durationMs: now - startedAt,
-      tools: result.toolUses.map(use => shortToolName(use.name)),
+      tools: result.toolUses.filter(use => use.name !== PROGRESS_TOOL).map(use => shortToolName(use.name)),
       tokensIn: stepIn,
       tokensOut: stepOut,
       stopReason: result.stopReason,
@@ -525,6 +554,8 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
+    // The mod's own tool is answered by its own hook, and counts toward nothing.
+    if (e.tool === PROGRESS_TOOL) return next(e)
     const agentId = e.agentId
     const isSub = agentId !== undefined
     // A background subagent goes on after the main turn ends: its calls still count toward its own run.
