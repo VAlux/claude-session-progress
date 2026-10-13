@@ -33,6 +33,7 @@ function engineBottom(on: On) {
   })
   on('tool.call', async ($, e) => {
     if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.startsWith('slow')) await new Promise<void>(resolve => held.push(resolve))
+    if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.includes('refused')) return { deny: 'refused' } as never
     if (e.tool === 'Agent') return { result: { agentId: 'a1', agentType: 'general-purpose' } } as never
     return { result: e.tool === 'TodoWrite' ? { oldTodos: [], newTodos: e.todos } : 'ok' } as never
   })
@@ -204,6 +205,18 @@ test("an interrupted turn keeps no command times: an interrupted command's time 
   await pacedNext($, clock, 't2')
   await report($, { left: [{ do: 'run it', run: 'slow 30' }, MS.s] })
   await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /~1m 20s left/)).toBe(true)
+})
+
+test("a refused command's wait is not learned as its run time", async ($, on) => {
+  const { clock, release } = await pacedTurn($, on)
+  await slowBash($, clock, release, 'slow 30 refused', 30_000)
+  await $.turn.complete(done('t1', 40_000))
+  await restart($)
+  await pacedNext($, clock, 't2')
+  await report($, { left: [{ do: 'run it', run: 'slow 30 refused' }, MS.s] })
+  await clock.advance(1_000)
+  // As an `m` it reads 1m 20s; learned from the refusal it would read ~1m.
   expect(has(await seen($, 'terminal'), /~1m 20s left/)).toBe(true)
 })
 

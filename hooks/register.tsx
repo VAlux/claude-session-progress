@@ -804,8 +804,8 @@ export const register: Register = (on, options) => {
         dispatchedByMain: !isSub,
       }))
     }
-    // A foreground command's time is how long it runs; a background one returns at once.
-    if (config.eta && command !== null && input.run_in_background !== true) {
+    // A foreground command's time is how long it runs; a background one returns at once, and a refused one never ran.
+    if (config.eta && command !== null && input.run_in_background !== true && ran.deny === undefined) {
       const ms = ended - now
       if (agentId !== undefined) await updateAgent($, agentId, ended, run => (run.eta === undefined ? run : { ...run, eta: learnCommand(run.eta, command, ms) }))
       else await update($, etaTurn, eta => (eta === null ? eta : learnCommand(eta, command, ms)))
