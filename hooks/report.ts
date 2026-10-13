@@ -71,10 +71,12 @@ function itemOf(raw: unknown): WorkItem | null {
   return { do: text }
 }
 
-/** A report from the tool's input, trimmed to what the band holds; null for one that says nothing. */
+/** A report from the tool's input, trimmed to what the band holds; null for one that says nothing, a list with no usable item included. */
 export function parseReport(input: Record<string, unknown>): Report | null {
   if (Array.isArray(input.left)) {
-    return { left: input.left.slice(0, MAX_ITEMS).map(itemOf).filter((item): item is WorkItem => item !== null) }
+    const left = input.left.slice(0, MAX_ITEMS).map(itemOf).filter((item): item is WorkItem => item !== null)
+    if (input.left.length > 0 && left.length === 0) return null
+    return { left }
   }
   const done = typeof input.done === 'number' && Number.isFinite(input.done) ? Math.floor(input.done) : 0
   return done >= 1 ? { done } : null
@@ -90,7 +92,7 @@ export function applyReport(work: Work | null, report: Report, now: number): { w
     const ended = work.items.slice(0, report.done)
     const next: Work = { items: work.items.slice(report.done), finished: [...work.finished, ...ended.map(item => item.do)].slice(-MAX_FINISHED), topSince: now }
     // Several at once leave no telling how long each took.
-    return { work: next, finished: ended.length === 1 ? { item: ended[0]!, since: work.topSince } : null }
+    return { work: next, finished: report.done === 1 && ended.length === 1 ? { item: ended[0]!, since: work.topSince } : null }
   }
   const { left } = report
   if (work === null) return { work: { items: left, finished: [], topSince: now }, finished: null }

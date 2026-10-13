@@ -121,6 +121,8 @@ test('a report is read leniently: trimmed, clamped, sizes checked, a command win
   expect(parseReport({ left: [{ do: 'run it', size: 'm', run: ' npm test ' }] })).toEqual({ left: [{ do: 'run it', run: 'npm test' }] })
   expect(parseReport({ left: [{ do: 'odd', size: 'xl' }, { do: '' }, 'read the code', 7] })).toEqual({ left: [{ do: 'odd' }, { do: 'read the code' }] })
   expect(parseReport({ left: [] })).toEqual({ left: [] })
+  expect(parseReport({ left: [7, ''] }), 'a list of nothing usable says nothing').toBeNull()
+  expect(parseReport({ left: [{ task: 'x' }] })).toBeNull()
   expect(parseReport({ done: 2.7 })).toEqual({ done: 2 })
   expect(parseReport({ done: 0 })).toBeNull()
   expect(parseReport({ done: 'x' })).toBeNull()
@@ -146,6 +148,7 @@ test('done for several items, or more than the list holds, empties what it says 
   const all = applyReport({ items: [a, b], finished: [], topSince: 100 }, { done: 5 }, 400)
   expect(all.work?.items).toEqual([])
   expect(all.finished).toBeNull()
+  expect(applyReport({ items: [a], finished: [], topSince: 100 }, { done: 5 }, 400).finished).toBeNull()
 })
 
 test('done before any list changes nothing', () => {
