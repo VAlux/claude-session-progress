@@ -16,16 +16,21 @@ import {
 
 const json = (v: unknown) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)))
 
-/** A store in memory that keeps JSON as `$.store` does; its first `failSets` writes throw, as one over 4 MiB would. */
-function memoryStore(entries: Record<string, unknown> = {}, failSets = 0) {
+/** A store in memory that keeps JSON as `$.store` does; its first `failSets` writes throw, as one over 4 MiB would, and `failOn` throws once. */
+function memoryStore(entries: Record<string, unknown> = {}, failSets = 0, failOn?: string) {
   const data = new Map<string, unknown>(Object.entries(entries).map(([k, v]) => [k, json(v)]))
   let failures = failSets
+  let failedOnce = false
   const store: Store = {
     get: async key => json(data.get(key)),
     set: async (key, value) => {
       if (failures > 0) {
         failures -= 1
         throw new Error('over 4 MiB')
+      }
+      if (key === failOn && !failedOnce) {
+        failedOnce = true
+        throw new Error('write failed')
       }
       data.set(key, json(value))
     },
@@ -112,4 +117,24 @@ test('nothing to write writes nothing', async () => {
   const { store, data } = memoryStore()
   expect(await flushHistory(store, '/repo', { sizes: {}, commands: {} }, 1, null)).toBeNull()
   expect(data.size).toBe(0)
+})
+
+test('a write that fails partway is retried without counting the samples twice', async () => {
+  const { store, data } = memoryStore({}, 0, 'eta.commands')
+  const written = await flushHistory(store, '/repo', { sizes: { s: [3] }, commands: { make: [4_000] } }, 1, null)
+  expect(written).not.toBeNull()
+  expect((data.get('eta.sizes') as { s: number[] }).s).toEqual([1, 1.5, 2, 3, 4, 3])
+  expect((data.get('eta.commands') as Record<string, Record<string, { samples: number[] }>>)['/repo']?.make?.samples).toEqual([4_000])
+})
+
+test('samples that are not finite and positive are dropped, and the history they would have erased is kept', async () => {
+  const { store, data } = memoryStore()
+  await flushHistory(store, '/repo', { sizes: { s: [0, Number.NaN, 5] }, commands: { make: [0], ok: [1_000] } }, 1, null)
+  expect((data.get('eta.sizes') as { s: number[] }).s).toEqual([1, 1.5, 2, 3, 4, 5])
+  const commands = (data.get('eta.commands') as Record<string, Record<string, { samples: number[] }>>)['/repo']
+  expect(Object.keys(commands ?? {})).toEqual(['ok'])
+  expect(commands?.ok?.samples).toEqual([1_000])
+  const loaded = await loadHistory(store, '/repo')
+  expect(loaded.sizes.s).toEqual([1, 1.5, 2, 3, 4, 5])
+  expect(loaded.commands).toEqual({ ok: [1_000] })
 })

@@ -22,7 +22,8 @@ export type Store = { get: (key: string) => Promise<unknown>; set: (key: string,
 type Runs = { samples: number[]; lastUsed: number }
 type Commands = Record<string, Record<string, Runs>>
 
-const isTimes = (v: unknown): v is number[] => Array.isArray(v) && v.length > 0 && v.every(x => typeof x === 'number' && Number.isFinite(x) && x > 0)
+const isTime = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x) && x > 0
+const isTimes = (v: unknown): v is number[] => Array.isArray(v) && v.length > 0 && v.every(isTime)
 const asRecord = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
 
 /** The history before anything is learned. */
@@ -61,7 +62,7 @@ export function readCommands(stored: unknown, project: string): Record<string, n
 /** The stored samples with a turn's added, each kind keeping its last `max`. */
 export function mergeSizes(stored: unknown, added: EtaPending['sizes'], max = BOUNDS.sizes): Sizes {
   const out = readSizes(stored)
-  for (const kind of Object.keys(added) as SampleKind[]) out[kind] = [...out[kind], ...(added[kind] ?? [])].slice(-max)
+  for (const kind of Object.keys(added) as SampleKind[]) out[kind] = [...out[kind], ...(added[kind] ?? []).filter(isTime)].slice(-max)
   return out
 }
 
@@ -72,11 +73,12 @@ export function mergeCommands(stored: unknown, project: string, added: EtaPendin
   const all = readAll(stored)
   const mine = { ...(all[project] ?? {}) }
   for (const [command, runs] of Object.entries(added)) {
-    if (runs.length === 0) continue
-    mine[command] = { samples: [...(mine[command]?.samples ?? []), ...runs].slice(-bounds.runs), lastUsed: now }
+    const kept = runs.filter(isTime)
+    if (kept.length === 0) continue
+    mine[command] = { samples: [...(mine[command]?.samples ?? []), ...kept].slice(-bounds.runs), lastUsed: now }
   }
-  const kept = Object.fromEntries(Object.entries(mine).sort((a, b) => b[1].lastUsed - a[1].lastUsed).slice(0, bounds.commands))
-  const projects = Object.entries({ ...all, [project]: kept })
+  const recent = Object.fromEntries(Object.entries(mine).sort((a, b) => b[1].lastUsed - a[1].lastUsed).slice(0, bounds.commands))
+  const projects = Object.entries({ ...all, [project]: recent })
     .filter(([, commands]) => Object.keys(commands).length > 0)
     .sort((a, b) => lastUsedOf(b[1]) - lastUsedOf(a[1]))
   return Object.fromEntries(projects.slice(0, bounds.projects))
@@ -117,24 +119,30 @@ const halved = (b: Bounds): Bounds => ({
 })
 
 /**
- * Writes a turn's samples and its log row, each key read again and merged first so two sessions keep each other's.
+ * Writes a turn's samples and its log row, each pass merging from one read of the keys, so a retry never counts a sample twice.
  * A failed write prunes to half the bounds and tries once more. Resolves the project's history as written, or null when nothing was.
  */
 export async function flushHistory(store: Store, project: string, pending: EtaPending, now: number, row: LogRow | null): Promise<History | null> {
   const hasSizes = Object.values(pending.sizes).some(list => (list?.length ?? 0) > 0)
   const hasCommands = Object.values(pending.commands).some(list => list.length > 0)
   if (!hasSizes && !hasCommands && row === null) return null
+  // One read before any write: a retry merges from it again, so a pass that failed halfway is never counted twice.
+  let stored: { sizes: unknown; commands: unknown; log: unknown }
+  try {
+    const current = await isCurrent(store)
+    const get = async (key: string) => (current ? await store.get(key) : undefined)
+    stored = { sizes: await get(KEY.sizes), commands: await get(KEY.commands), log: await get(KEY.log) }
+  } catch {
+    return null
+  }
   for (const bounds of [BOUNDS, halved(BOUNDS)]) {
     try {
-      const current = await isCurrent(store)
-      const stored = async (key: string) => (current ? await store.get(key) : undefined)
-      const sizes = mergeSizes(await stored(KEY.sizes), pending.sizes, bounds.sizes)
-      const commands = mergeCommands(await stored(KEY.commands), project, pending.commands, now, bounds)
-      const log = row === null ? null : appendLog(await stored(KEY.log), row, bounds.log)
+      const sizes = mergeSizes(stored.sizes, pending.sizes, bounds.sizes)
+      const commands = mergeCommands(stored.commands, project, pending.commands, now, bounds)
       await store.set(KEY.version, VERSION)
       await store.set(KEY.sizes, sizes)
       await store.set(KEY.commands, commands)
-      if (log !== null) await store.set(KEY.log, log)
+      if (row !== null) await store.set(KEY.log, appendLog(stored.log, row, bounds.log))
       return { sizes, commands: readCommands(commands, project) }
     } catch {
       // Over the store's 4 MiB, say: the second pass keeps half as much.
