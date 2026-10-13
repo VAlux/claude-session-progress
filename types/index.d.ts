@@ -134,6 +134,11 @@ export type AgentRun = {
 export type Totals = { turns: number; longTurns: number; totalMs: number; toolCalls: number; tokensIn: number; tokensOut: number; cost?: number }
 
 declare module 'claude-code' {
+  /** The mod's own tool, as the model calls it: Claude's report of the work left. Its input is read leniently, so it stays loose here. */
+  interface McpToolInputs {
+    'mcp__session-progress__progress': { left?: unknown; done?: unknown }
+  }
+
   interface PluginState {
     'session-progress': {
       live: Live | null
