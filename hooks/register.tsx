@@ -28,6 +28,7 @@ import {
   barSvg,
   capitalize,
   etaLabels,
+  etaRange,
   etaValue,
   fitLabel,
   hex,
@@ -1061,23 +1062,32 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       const t = Date.now()
       const isDone = !isRunning(run)
-      const list = run.tasks
-      const progress = isDone && run.reason === 'answer' ? 1 : planProgress(list)
+      const runEta = config.eta ? run.eta : undefined
+      const work = runEta?.work ?? null
+      // Claude Code draws no list for a subagent: its band lists its tasks, or its reports when it keeps no tasks.
+      const usesWork = work !== null && run.tasks.length === 0
+      const list = usesWork ? workTasks(work) : run.tasks
+      const progress = isDone && run.reason === 'answer' ? 1 : config.eta ? (runEta?.fill ?? null) : planProgress(list)
       const palette = !isDone ? ACCENT : run.reason === 'answer' ? DONE : run.reason === 'aborted' ? WARN : FAIL
       const color = !isDone ? 'claude' : run.reason === 'answer' ? 'success' : run.reason === 'aborted' ? 'warning' : 'error'
       const current = list.find(task => task.status === 'in_progress')
+      const named = current === undefined ? undefined : usesWork ? capitalize(current.subject) : (current.activeForm ?? current.subject)
       const headline = isDone
         ? run.reason === 'answer'
           ? 'Subagent complete'
           : run.reason === 'aborted'
             ? 'Subagent interrupted'
             : 'Subagent ended with an error'
-        : (current?.activeForm ?? current?.subject ?? run.running[run.running.length - 1]?.label ?? run.lastActivity ?? 'Starting')
+        : (named ?? run.running[run.running.length - 1]?.label ?? run.lastActivity ?? 'Starting')
       const elapsed = isDone ? (run.durationMs ?? (run.finishedAt ?? now) - run.startedAt) : now - run.startedAt
       const doneCount = list.filter(task => task.status === 'completed').length
       const barWidth = Math.max(12, width - BAR_SLACK)
-      // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
-      const label = progress === null ? '' : pctLabel(progress)
+      const isUp = !isDone && runEta !== undefined && runEta.upUntil !== null && now < runEta.upUntil
+      const labels = isDone || runEta === undefined || runEta.last === null ? [] : etaLabels(runEta.last).map(text => (isUp ? `${text} ↑` : text))
+      // Running with the countdown on, the label counts down; finished, or without it, it is the share done.
+      const label =
+        config.eta && !isDone ? (labels.length === 0 ? '' : isTerminal ? fitLabel(labels, barWidth) : labels[0]!) : progress === null ? '' : pctLabel(progress)
+      const labelColor = label === '' ? MUTED : isUp ? WARN.base : palette.base
       const detail = detailOf(run)
       const stats = [
         stat('tools', plural(run.toolCalls, 'tool call')),
@@ -1109,12 +1119,12 @@ export const register: Register = (on, options) => {
             </Text>
           </Box>
           <Text dimColor>
-            {run.description ?? run.type ?? 'subagent'} · {list.length > 0 ? `${doneCount}/${list.length} tasks · ` : ''}
+            {run.description ?? run.type ?? 'subagent'} · {list.length > 0 ? `${doneCount}/${list.length} ${usesWork ? 'items' : 'tasks'} · ` : ''}
             {duration(elapsed)}
           </Text>
         </Box>,
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
-          {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor: progress === null ? MUTED : palette.base })}
+          {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor })}
         </Box>,
         statsRow('stats', stats),
       ]
@@ -1133,7 +1143,7 @@ export const register: Register = (on, options) => {
         )
       }
       // Claude Code draws no list for a subagent, so its band lists it unless step rows are off.
-      if (stepRows !== 'never') rows.push(...stepRowsOf(list, Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1))))
+      if (stepRows !== 'never') rows.push(...stepRowsOf(list, Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1)), usesWork ? trailsOf(runEta?.items) : {}))
 
       return (
         <Box flexDirection="column">
@@ -1279,19 +1289,29 @@ export const register: Register = (on, options) => {
             : sum.reason === 'refusal'
               ? 'Stopped (refusal)'
               : 'Ended with an error'
-    const planned = sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null
-    const finalProgress = sum.reason === 'answer' && waiting === 0 ? 1 : planned
+    const eta = config.eta ? await read($, etaTurn) : null
+    // With the countdown on, the bar stays where its fill got to; without it, at the plan's share done.
+    const planned = sum.fill ?? (sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null)
+    // Waiting on subagents, the fill goes on with their countdowns.
+    const held = waiting > 0 ? (eta?.fill ?? planned) : planned
+    const finalProgress = sum.reason === 'answer' && waiting === 0 ? 1 : held
     // The finish eases in on the terminal's frame loop; the desktop draws where it lands.
     const isEasing = isTerminal && scene.isFinishing
-    // Waiting with no plan to measure, the bar sweeps rather than settle on a number it does not have.
-    const barProgress = waiting > 0 && planned === null ? null : isEasing ? scene.shown : (finalProgress ?? 0)
+    // Waiting with nothing to measure, the bar sweeps rather than settle on a number it does not have.
+    const barProgress = waiting > 0 && held === null ? null : isEasing ? scene.shown : (finalProgress ?? 0)
+    const isUp = eta !== null && eta.upUntil !== null && now < eta.upUntil
+    const waitLabels = waiting > 0 && eta !== null && eta.last !== null ? etaLabels(eta.last).map(text => (isUp ? `${text} ↑` : text)) : []
+    const waitLabel = waitLabels.length === 0 ? null : isTerminal ? fitLabel(waitLabels, barWidth) : waitLabels[0]!
+    // A wait with the countdown on shows the subagents' countdown or nothing: never a share it does not have.
+    const isCounting = config.eta && waiting > 0
     if (isTerminal) {
       scene.barWidth = barWidth
       scene.palette = palette
-      scene.showPct = finalProgress !== null
-      scene.label = ''
+      scene.showPct = !isCounting && finalProgress !== null
+      scene.label = waitLabel ?? ''
+      scene.labelColor = isUp ? WARN.base : palette.base
     }
-    const label = finalProgress === null || barProgress === null ? '' : pctLabel(barProgress)
+    const label = waitLabel ?? (isCounting || finalProgress === null || barProgress === null ? '' : pctLabel(barProgress))
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0
 
     const detail = detailOf(sum)
@@ -1336,7 +1356,7 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
-          {marks.bar(BAR_KEY, barWidth, barProgress, t, palette, { shimmer: isEasing, label, labelColor: palette.base })}
+          {marks.bar(BAR_KEY, barWidth, barProgress, t, palette, { shimmer: isEasing || isCounting, label, labelColor: isUp ? WARN.base : palette.base })}
         </Box>
         {statsRow('work', work)}
         {workDetail}
@@ -1345,6 +1365,11 @@ export const register: Register = (on, options) => {
         {sum.topTools.length > 0 && (
           <Text key="tools" dimColor wrap="truncate-end">
             {sum.topTools.map(([tool, n]) => `${tool} ${n}`).join('  ')}
+          </Text>
+        )}
+        {sum.eta !== undefined && (
+          <Text key="eta" dimColor wrap="truncate-end">
+            {`⏱ at ${duration(sum.eta.atMs)}: estimated ${etaValue(sum.eta.estimatedMs)} more${etaRange({ ms: sum.eta.estimatedMs, lowMs: sum.eta.lowMs, highMs: sum.eta.highMs }) ?? ''} · took ${duration(sum.eta.tookMs)} more`}
           </Text>
         )}
         {/* After one turn the session's totals are that turn's. */}

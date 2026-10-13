@@ -323,3 +323,68 @@ test('a task list keeps its rows and count when Claude also reports: Claude Code
   expect(has(shown, /fix the parser/)).toBe(false)
   expect(has(shown, /~1m 20s left/), 'the report still drives the countdown').toBe(true)
 })
+
+/** A main turn that starts subagent a1, whose own rounds are 10 s apart; the clock stands 10 s in. */
+async function withSubagent($: Engine, on: On) {
+  engineBottom(on)
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'review the branch', turnId: 't1' })
+  for (const command of ['git status', 'git log', 'git diff']) await $.tool.call({ tool: 'Bash', command })
+  await $.tool.call({ tool: 'Agent', description: 'Review the branch', prompt: 'Review it.', subagent_type: 'general-purpose' })
+  await round($, 0, { agentId: 'a1' })
+  await clock.advance(10_000)
+  await round($, 1, { agentId: 'a1' })
+  return clock
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: a subagent's band counts down its own report and lists its items`, async ($, on) => {
+    const clock = await withSubagent($, on)
+    await report($, { left: [MS.m, MS.s] }, 'a1')
+    await clock.advance(1_000)
+    const shown = await seen($, surface, true, 80, { agentId: 'a1' })
+    expect(has(shown, /~1m 20s left/)).toBe(true)
+    expect(has(shown, /◐ fix the parser/)).toBe(true)
+    expect(has(shown, /0\/2 items/)).toBe(true)
+  })
+
+  test(`${surface}: a main turn waiting on its subagent shows that subagent's countdown`, async ($, on) => {
+    const clock = await withSubagent($, on)
+    await report($, { left: [MS.l] }, 'a1')
+    await clock.advance(11_000)
+    await $.turn.complete(done('t1', 21_000))
+    await clock.advance(2_000)
+    const shown = await seen($, surface, false)
+    expect(has(shown, /Waiting for 1 subagent/)).toBe(true)
+    expect(has(shown, /~2m left/)).toBe(true)
+  })
+}
+
+test('waiting on a subagent that never reported shows no countdown', async ($, on) => {
+  const clock = await withSubagent($, on)
+  await clock.advance(11_000)
+  await $.turn.complete(done('t1', 21_000))
+  await clock.advance(2_000)
+  const shown = await seen($, 'terminal', false)
+  expect(has(shown, /Waiting for 1 subagent/)).toBe(true)
+  expect(has(shown, /left/)).toBe(false)
+})
+
+test('the summary compares the first estimate with what followed', async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(60_000)
+  await $.turn.complete(done('t1', 75_000))
+  await clock.advance(2_000)
+  expect(has(await seen($, 'terminal', false), /^⏱ at 10s: estimated ~1m 20s more · took 1m 05s more$/)).toBe(true)
+})
+
+test('an interrupted turn has no accuracy line', async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(60_000)
+  await $.turn.complete(aborted('t1', 75_000))
+  await clock.advance(2_000)
+  expect(has(await seen($, 'terminal', false), /⏱/)).toBe(false)
+})
