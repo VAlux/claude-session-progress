@@ -324,7 +324,7 @@ async function readSteps($: Dollar): Promise<Steps> {
   return stepsOf(await read($, tasks), await read($, planFile))
 }
 
-async function trackPlanFile($: Dollar, path: string, written: string | null) {
+async function trackPlanFile($: Dollar, path: string, written: string | null, isSub: boolean) {
   let text = written
   if (text === null) {
     try {
@@ -345,6 +345,8 @@ async function trackPlanFile($: Dollar, path: string, written: string | null) {
       }
       return current?.path === path ? null : current
     }
+    // A subagent's own checklist (superpowers' task brief, say) never takes over; its edit to the main plan still counts.
+    if (isSub && current?.path !== path) return current
     // Another file only takes over while it still has open steps (a finished checklist read for reference does not).
     const isOpen = items.some(item => !item.done)
     if (current !== null && current.path !== path && !isOpen && current.items.some(item => !item.done)) return current
@@ -845,7 +847,7 @@ export const register: Register = (on, options) => {
       }
     }
     if (!failed && PLAN_FILE_TOOLS.has(e.tool) && path !== null && isMarkdown(path)) {
-      await reportsPlanChange($, ended, () => trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null))
+      await reportsPlanChange($, ended, () => trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null, isSub))
     }
 
     return ran

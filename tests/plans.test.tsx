@@ -73,6 +73,27 @@ test('a Markdown plan with checkboxes drives the bar when there is no task list'
   expect(await shows($, /3\/5 steps/)).toBe(true)
 })
 
+// superpowers' executor hands each subagent a brief with its own `- [ ] Step N:` boxes, which nothing ever ticks.
+test("a subagent reading its own checklist never replaces the main plan, but its edit to the main plan counts", { options: { eta: 'off' } }, async ($, on) => {
+  const brief = ['# Task 10', '', '- [ ] **Step 1: Update the README**', '- [ ] **Step 2: Bump the version**', '- [ ] **Step 3: Commit**'].join('\n')
+  const file = { text: plan(1) }
+  bottom(on, file)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'implement plan.md', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', file_path: '/repo/docs/plan.md' })
+  file.text = brief
+  await $.tool.call({ tool: 'Read', file_path: '/repo/.superpowers/sdd/task-10-brief.md', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Write', file_path: '/repo/.superpowers/sdd/task-10-report.md', content: brief, agentId: 'a1' } as never)
+  await clock.advance(9_000)
+  expect(await shows($, /plan\.md · 1\/5 steps/)).toBe(true)
+  expect(await shows($, /Update the README/)).toBe(false)
+
+  file.text = plan(2)
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/docs/plan.md', old_string: '- [ ] Write the hooks', new_string: '- [x] Write the hooks', agentId: 'a1' } as never)
+  await clock.advance(1_000)
+  expect(await shows($, /plan\.md · 2\/5 steps/)).toBe(true)
+})
+
 test('a task list wins over a plan file', () => {
   const tasks = [
     { id: '1', subject: 'a', status: 'completed' as const },
