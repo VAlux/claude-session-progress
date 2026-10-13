@@ -21,6 +21,9 @@ export type SampleKind = 's' | 'm' | 'l' | 'task' | 'planTask' | 'planStep'
 /** A time in milliseconds with its likely range. */
 export type Spread = { ms: number; lowMs: number; highMs: number }
 
+/** Samples a loop gathered and has not yet written: round-equivalents by kind, and milliseconds by command. */
+export type EtaPending = { sizes: Partial<Record<SampleKind, number[]>>; commands: Record<string, number[]> }
+
 /** One tool call as a band's details list it; `agentId` marks a subagent's. */
 export type CallRecord = {
   id: string
