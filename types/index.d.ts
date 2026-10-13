@@ -15,6 +15,12 @@ export type PlanTask = { n: number; text: string; steps: number; stepsDone: numb
  */
 export type PlanFile = { path: string; name: string; items: PlanItem[]; tasks?: PlanTask[]; completed?: number[] }
 
+/** The kinds of work whose times the countdown learns, in round-equivalents: Claude's item sizes, and a task list's, a plan's tasks' and a plan's steps'. */
+export type SampleKind = 's' | 'm' | 'l' | 'task' | 'planTask' | 'planStep'
+
+/** A time in milliseconds with its likely range. */
+export type Spread = { ms: number; lowMs: number; highMs: number }
+
 /** One tool call as a band's details list it; `agentId` marks a subagent's. */
 export type CallRecord = {
   id: string
