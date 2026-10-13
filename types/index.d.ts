@@ -21,7 +21,7 @@ export type SampleKind = 's' | 'm' | 'l' | 'task' | 'planTask' | 'planStep'
 /** A time in milliseconds with its likely range. */
 export type Spread = { ms: number; lowMs: number; highMs: number }
 
-/** Samples a loop gathered and has not yet written: round-equivalents by kind, and milliseconds by command. */
+/** Samples a loop gathered and has not yet written: round-equivalents by kind, and milliseconds by command key. */
 export type EtaPending = { sizes: Partial<Record<SampleKind, number[]>>; commands: Record<string, number[]> }
 
 /** One item of a `progress` report: sized, or named by the command that running is the item. */
@@ -35,6 +35,8 @@ export type EtaTurn = {
   /** When the loop started. */
   startedAt: number
   work: Work | null
+  /** The command keys of every `run` item reported this turn, so a finished one's long round stays out of the pace. */
+  runs: string[]
   /** When each task or plan entry came into progress, and the ones already learned: both keyed by each task's id and text (its `taskKey`). */
   since: Record<string, number>
   counted: string[]
@@ -61,7 +63,7 @@ export type CallRecord = {
   id: string
   tool: string
   label: string
-  /** A Bash call's command as the countdown's history keys it. Absent on other tools and on a record kept from before it existed. */
+  /** A Bash call's command key (a hash of its normalized text). Absent on other tools and on a record kept from before it existed. */
   command?: string
   agentId?: string
   startedAt: number

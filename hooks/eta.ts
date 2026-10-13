@@ -115,6 +115,23 @@ export function normalizeCommand(command: string): string {
     .slice(0, 200)
 }
 
+/** A 53-bit hash of a text (cyrb53), as 14 hex digits. */
+function cyrb53(text: string): string {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0')
+}
+
+/** How the countdown keys a command — its run times, its rounds, a `run` item — by a hash of its normalized text, so the text is never stored. */
+export const commandKey = (command: string) => cyrb53(normalizeCommand(command))
+
 /** Each completed round's wall time (a model request and the tools it ran), leaving out rounds that ran a `run` item's command. */
 export function roundTimes(steps: readonly StepRecord[], calls: readonly CallRecord[], runs: ReadonlySet<string>): number[] {
   const out: number[] = []
@@ -128,10 +145,9 @@ export function roundTimes(steps: readonly StepRecord[], calls: readonly CallRec
   return out
 }
 
-/** A loop's pace: its median round, or before any round has completed, its first request's own time. */
-export function paceOf(detail: Detail, work: Work | null): number | null {
-  const runs = new Set((work?.items ?? []).flatMap(item => (item.run === undefined ? [] : [normalizeCommand(item.run)])))
-  const times = roundTimes(detail.stepLog, detail.calls, runs).sort(byNumber)
+/** A loop's pace: its median round, leaving out those that ran a `runs` command (by key); before any round has completed, its first request's own time. */
+export function paceOf(detail: Detail, runs: readonly string[]): number | null {
+  const times = roundTimes(detail.stepLog, detail.calls, new Set(runs)).sort(byNumber)
   if (times.length > 0) return quantile(times, 0.5)
   const first = detail.stepLog[0]
   return first !== undefined && first.durationMs > 0 ? first.durationMs : null
@@ -141,7 +157,7 @@ export function paceOf(detail: Detail, work: Work | null): number | null {
 export function runningSince(detail: Detail, work: Work | null): number | null {
   const run = work?.items[0]?.run
   if (run === undefined) return null
-  const command = normalizeCommand(run)
+  const command = commandKey(run)
   return [...detail.calls].reverse().find(c => c.status === 'running' && c.command === command)?.startedAt ?? null
 }
 
@@ -185,7 +201,7 @@ export function estimate(x: EtaInput): EtaOutput {
     source = 'progress'
     parts = work.items.map((item, i) => ({
       key: `work-${i}`,
-      basis: item.run !== undefined ? commandBasis(x.commands[normalizeCommand(item.run)], x.sizes.m, pace, x.c) : sizedBasis(x.sizes[item.size ?? 'm'], pace, x.c),
+      basis: item.run !== undefined ? commandBasis(x.commands[commandKey(item.run)], x.sizes.m, pace, x.c) : sizedBasis(x.sizes[item.size ?? 'm'], pace, x.c),
       spentMs: i > 0 ? null : x.now - (item.run !== undefined && x.runningSince !== null ? x.runningSince : work.topSince),
     }))
   } else if (x.tasks !== null && x.tasks.list.length > 0) {
@@ -221,6 +237,7 @@ export function freshEta(startedAt: number): EtaTurn {
   return {
     startedAt,
     work: null,
+    runs: [],
     since: {},
     counted: [],
     last: null,
@@ -272,7 +289,7 @@ export function learnTasks(eta: EtaTurn, list: readonly Task[], kind: TaskKind, 
   return out
 }
 
-/** Adds a Bash call's time to its command's runs, keeping the last 10. */
+/** Adds a Bash call's time to its command's runs (by its key), keeping the last 10. */
 export function learnCommand(eta: EtaTurn, command: string, ms: number): EtaTurn {
   if (command === '' || !(ms > 0)) return eta
   const runs = [...(eta.pending.commands[command] ?? []), ms].slice(-10)

@@ -51,6 +51,7 @@ import {
 } from './frames'
 import {
   combine,
+  commandKey,
   correction,
   emptyPending,
   estimate,
@@ -58,7 +59,6 @@ import {
   learnCommand,
   learnItem,
   learnTasks,
-  normalizeCommand,
   paceOf,
   runningSince,
   tickEta,
@@ -393,7 +393,7 @@ async function flush($: Dollar, pending: EtaPending, isAborted: boolean, row: Lo
 
 /** One loop's countdown worked out again: its finished tasks learned, its estimate made, its bar moved on. */
 function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], rounds: number, now: number, waitedOn: readonly (Spread | null)[] | null): EtaTurn {
-  const pace = paceOf(detail, eta.work)
+  const pace = paceOf(detail, eta.runs)
   const learned = tasks === null ? eta : learnTasks(eta, tasks.list, tasks.kind, now, pace, history.sizes)
   const own = estimate({
     now,
@@ -438,8 +438,10 @@ async function takeReport($: Dollar, agentId: string | undefined, input: Record<
   const now = await $.clock.now()
   const take = (eta: EtaTurn, detail: Detail, rounds: number): EtaTurn => {
     const { work, finished } = applyReport(eta.work, report, now)
-    const next = { ...eta, work, lastReportRound: rounds }
-    return finished === null ? next : learnItem(next, finished, now, paceOf(detail, eta.work), history.sizes)
+    const added = 'left' in report ? report.left.flatMap(item => (item.run === undefined ? [] : [commandKey(item.run)])) : []
+    const runs = [...new Set([...eta.runs, ...added])]
+    const next = { ...eta, work, runs, lastReportRound: rounds }
+    return finished === null ? next : learnItem(next, finished, now, paceOf(detail, runs), history.sizes)
   }
   if (agentId !== undefined) {
     await updateAgent($, agentId, now, run => ({ ...run, eta: take(run.eta ?? freshEta(run.startedAt), detailOf(run), run.steps) }))
@@ -720,7 +722,7 @@ export const register: Register = (on, options) => {
     const isAgent = e.tool === 'Agent' || String(e.tool) === 'Task'
     const now = await $.clock.now()
 
-    const command = e.tool === 'Bash' && typeof input.command === 'string' ? normalizeCommand(input.command) : null
+    const command = e.tool === 'Bash' && typeof input.command === 'string' && input.command.trim() !== '' ? commandKey(input.command) : null
     const call = {
       id: e.tool_use_id,
       tool: e.tool,

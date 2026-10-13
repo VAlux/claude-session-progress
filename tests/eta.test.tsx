@@ -5,6 +5,7 @@ import {
   advanceFill,
   combine,
   commandBasis,
+  commandKey,
   correction,
   estimate,
   freshEta,
@@ -160,18 +161,32 @@ test('a command is keyed trimmed, its spaces collapsed, a leading cd dropped, cu
   expect(normalizeCommand('x'.repeat(300))).toHaveLength(200)
 })
 
+test('a command is keyed by a hash of its normalized text, so the text itself is never kept', () => {
+  expect(commandKey('cd /repo &&  npm   test')).toBe(commandKey('npm test'))
+  expect(commandKey('npm test')).toMatch(/^[0-9a-f]{14}$/)
+  expect(commandKey('npm test')).not.toBe(commandKey('npm run test'))
+})
+
 const step = (index: number, startedAt: number, durationMs = 1_000): StepRecord => ({ index, startedAt, durationMs, tools: [], tokensIn: 0, tokensOut: 0, stopReason: null })
-const call = (startedAt: number, command: string, status: CallRecord['status'] = 'ok'): CallRecord => ({ id: `c${startedAt}`, tool: 'Bash', label: command, command, startedAt, durationMs: 1, status })
+const call = (startedAt: number, command: string, status: CallRecord['status'] = 'ok'): CallRecord => ({
+  id: `c${startedAt}`,
+  tool: 'Bash',
+  label: command,
+  command: commandKey(command),
+  startedAt,
+  durationMs: 1,
+  status,
+})
 const detail = (stepLog: StepRecord[], calls: CallRecord[] = []): Detail => ({ calls, files: [], reads: [], stepLog, agentIds: [] })
 
 test("the pace is the median round, leaving out rounds that ran a run item's command", () => {
   const steps = [step(0, 0), step(1, 10_000), step(2, 30_000), step(3, 31_000)]
   expect(roundTimes(steps, [], new Set())).toEqual([10_000, 20_000, 1_000])
-  expect(roundTimes(steps, [call(12_000, 'npm test')], new Set(['npm test']))).toEqual([10_000, 1_000])
-  expect(paceOf(detail(steps), null)).toBe(10_000)
-  expect(paceOf(detail(steps, [call(12_000, 'npm test')]), { items: [{ do: 'test', run: 'npm test' }], finished: [], topSince: 0 })).toBe(5_500)
-  expect(paceOf(detail([step(0, 0, 4_000)]), null), 'before a round has completed, the first request').toBe(4_000)
-  expect(paceOf(detail([]), null)).toBeNull()
+  expect(roundTimes(steps, [call(12_000, 'npm test')], new Set([commandKey('npm test')]))).toEqual([10_000, 1_000])
+  expect(paceOf(detail(steps), [])).toBe(10_000)
+  expect(paceOf(detail(steps, [call(12_000, 'npm test')]), [commandKey('npm test')])).toBe(5_500)
+  expect(paceOf(detail([step(0, 0, 4_000)]), []), 'before a round has completed, the first request').toBe(4_000)
+  expect(paceOf(detail([]), [])).toBeNull()
 })
 
 test("a run item's command, while it runs, is timed from when it started", () => {
@@ -211,7 +226,7 @@ test("a Progress list's estimate: the item in progress, the rest's medians, a ro
 
 test("a run item is its command's times, timed from when the command started", () => {
   const work = listed([{ do: 'test', run: 'npm test' }])
-  const commands = { 'npm test': [180_000, 190_000, 200_000] }
+  const commands = { [commandKey('npm test')]: [180_000, 190_000, 200_000] }
   expect(estimate(input({ work, commands })).estimate).toEqual({ ms: 200_000, lowMs: 105_000, highMs: 390_000 })
   expect(estimate(input({ work, commands, runningSince: NOW - 60_000 })).estimate?.ms).toBe(140_000)
 })
@@ -277,10 +292,11 @@ test('a rewritten task list times the task now at a position as a new one', () =
 })
 
 test("a Bash call's time joins its command's runs, the last 10 kept", () => {
+  const key = commandKey('npm test')
   let eta = freshEta(0)
-  for (let i = 1; i <= 12; i++) eta = learnCommand(eta, 'npm test', i * 1_000)
-  expect(eta.pending.commands['npm test']).toEqual([3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000, 12_000])
-  expect(learnCommand(freshEta(0), 'npm test', 0).pending.commands).toEqual({})
+  for (let i = 1; i <= 12; i++) eta = learnCommand(eta, key, i * 1_000)
+  expect(eta.pending.commands[key]).toEqual([3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000, 12_000])
+  expect(learnCommand(freshEta(0), key, 0).pending.commands).toEqual({})
 })
 
 test('each look keeps the estimate, notes the first, moves the bar on, and marks a growing one', () => {

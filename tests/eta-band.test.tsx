@@ -220,6 +220,19 @@ test("a refused command's wait is not learned as its run time", async ($, on) =>
   expect(has(await seen($, 'terminal'), /~1m 20s left/)).toBe(true)
 })
 
+test("a finished run item's long round stays out of the pace", async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [{ do: 'run it', run: 'npm test' }, MS.s] })
+  await $.tool.call({ tool: 'Bash', command: 'npm test' })
+  // The round after the command takes 180 s of the clock; holding the call itself that long runs past the kit's budget for a hook.
+  await clock.advance(180_000)
+  await round($, 2)
+  await report($, { done: 1 })
+  await clock.advance(1_000)
+  // The pace is still 10 s: the `s` item's 20 s less the second spent, and a round. With the long round counted it reads minutes.
+  expect(has(await seen($, 'terminal'), /~30s left/)).toBe(true)
+})
+
 test('a reload mid-turn keeps the countdown', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.m, MS.s] })
