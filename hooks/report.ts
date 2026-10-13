@@ -7,7 +7,9 @@ export const PROGRESS_NAME = 'progress'
 export const PROGRESS_TOOL = 'mcp__session-progress__progress'
 
 const DESCRIPTION =
-  'Reports the work left in this turn, for the progress display only. List the items in order, the one you are on first. ' +
+  'Reports the work left in this turn, for the progress display only. Use it during work that will take more than a few steps ' +
+  'when you keep no task list: start once you have a rough idea, and send it in the same response as your other tool calls, never on its own. ' +
+  'List the items in order, the one you are on first. ' +
   'Give each a size: s — a quick change or lookup, about 1–2 tool calls; m — a few files or a few rounds, 3–8; ' +
   'l — a broad change or a debugging loop, 9 or more. When running a command is the item (a test suite, a build), ' +
   'give `run` with the exact command instead of a size. Send `{done: 1}` when you finish the top item; ' +

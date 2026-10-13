@@ -479,11 +479,16 @@ export const register: Register = (on, options) => {
     return { ...composed, sections: [...composed.sections, ...lines.map(line => ({ ...line, scope: 'session' as const }))] }
   }).catch(($, e, next) => next(e))
 
-  // The mod's own tool runs without asking: it only feeds the band.
-  on('tool.check', { tool: PROGRESS_TOOL }, async () => ({ decision: 'allow' as const })).catch(($, e, next) => next(e))
+  // The mod's own tool runs without asking: it only feeds the band. The matcher spells the name out so the host's
+  // scan can read it, and the check inside keeps every other tool's decision the engine's.
+  on('tool.check', { tool: 'mcp__session-progress__progress' }, async ($, e, next) =>
+    e.tool === PROGRESS_TOOL ? { decision: 'allow' as const } : next(e),
+  ).catch(($, e, next) => next(e))
 
   // Claude's reports are answered here and never passed on: no other hook serves the mod's own tool.
-  on('tool.call', { tool: PROGRESS_TOOL }, async () => ({ result: 'ok' })).catch(() => ({ result: 'ok' }))
+  on('tool.call', { tool: 'mcp__session-progress__progress' }, async ($, e, next) => (e.tool === PROGRESS_TOOL ? { result: 'ok' } : next(e))).catch(
+    () => ({ result: 'ok' }),
+  )
 
   // A report is for the band, not the transcript: its rows draw nothing.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {

@@ -6,11 +6,12 @@ import { PROGRESS_TOOL } from '../hooks/report'
 
 const PLUGIN = 'session-progress'
 
-function engineBottom(on: On, registered: { name: string; isDeferred?: boolean }[] = []) {
+function engineBottom(on: On, registered: { name: string; isDeferred?: boolean }[] = [], descriptions: string[] = []) {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: '/repo' }))
   on('tool.register', ($, e) => {
     registered.push({ name: e.name, isDeferred: e.isDeferred })
+    descriptions.push(e.description)
     return { value: { tool: `mcp__${PLUGIN}__${e.name}` } }
   })
   on('tool.check', () => ({ decision: 'ask' as const }))
@@ -31,9 +32,12 @@ const base = { model: 'm', promptModel: 'm', surfaces: ['terminal' as const], ou
 
 test('the mod registers its progress tool at session start, in the tool list rather than behind ToolSearch', async ($, on) => {
   const registered: { name: string; isDeferred?: boolean }[] = []
-  engineBottom(on, registered)
+  const descriptions: string[] = []
+  engineBottom(on, registered, descriptions)
   await start($)
   expect(registered).toEqual([{ name: 'progress', isDeferred: false }])
+  // Subagents get no system-prompt line, so the tool's own description is what tells every loop when to report.
+  expect(descriptions[0]).toContain('never on its own')
 })
 
 test('eta: off registers no tool', { options: { eta: 'off' } }, async ($, on) => {
