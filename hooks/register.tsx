@@ -26,7 +26,9 @@ import {
   activityLabel,
   barCells,
   barSvg,
+  capitalize,
   etaLabels,
+  etaValue,
   fitLabel,
   hex,
   MUTED,
@@ -63,7 +65,7 @@ import {
   type TaskKind,
 } from './eta'
 import { flushHistory, loadHistory, seeded, type History, type LogRow, type Store } from './history'
-import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, parseReport } from './report'
+import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, parseReport, workTasks } from './report'
 
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
 const summary = atom({ plugin: 'session-progress', key: 'summary' } as const, null)
@@ -937,8 +939,8 @@ export const register: Register = (on, options) => {
     const isTerminal = e.surface === 'terminal'
     const marks = e.surface === 'terminal' ? terminalMarks($.ui.resolve(e), width) : desktopMarks($.ui.resolve(e))
 
-    /** Up to `room` rows of a step list, keeping the active step in view, then a `+N more` row. */
-    const stepRowsOf = (list: readonly Task[], room: number) => {
+    /** Up to `room` rows of a step list, keeping the active step in view, then a `+N more` row; a row with a trail (its estimate) ends with it. */
+    const stepRowsOf = (list: readonly Task[], room: number, trails: Readonly<Record<string, string>> = {}) => {
       const out: JSX.Element[] = []
       if (list.length === 0 || room <= 0) return out
       // Keep the active task in view: start from just before the first unfinished one.
@@ -948,17 +950,31 @@ export const register: Register = (on, options) => {
       for (const task of visible) {
         const isDone = task.status === 'completed'
         const isActive = task.status === 'in_progress'
-        out.push(
+        const row = (
           <Text key={`task-${task.id}`} wrap="truncate-end" dimColor={!isActive} strikethrough={false}>
             <Text color={isDone ? 'success' : isActive ? 'claude' : 'inactive'}>{isDone ? '  ✓ ' : isActive ? '  ◐ ' : '  ○ '}</Text>
             {isActive ? <Text bold>{task.subject}</Text> : task.subject}
-          </Text>,
+          </Text>
+        )
+        const trail = trails[task.id]
+        out.push(
+          trail === undefined ? (
+            row
+          ) : (
+            <Box key={`task-row-${task.id}`} flexDirection="row" justifyContent="space-between" width={marks.rowWidth}>
+              <Box flexShrink={1}>{row}</Box>
+              <Text dimColor>{` ${trail}`}</Text>
+            </Box>
+          ),
         )
       }
       const hidden = list.length - visible.length
       if (hidden > 0) out.push(<Text key="more" dimColor>{`    +${hidden} more`}</Text>)
       return out
     }
+
+    /** Each listed item's estimate, as its row's trail. */
+    const trailsOf = (items: readonly { key: string; ms: number }[] | undefined) => Object.fromEntries((items ?? []).map(item => [item.key, etaValue(item.ms)]))
 
     /** One stat as a Button that opens its details under the row, or closes them when they are open. */
     const statButton = (stat: Stat) => {
@@ -1166,9 +1182,15 @@ export const register: Register = (on, options) => {
       }
       if (isTerminal) scene.barWidth = barWidth
 
-      const current = plan.find(task => task.status === 'in_progress')
-      const headline = current?.activeForm ?? current?.subject ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking'
-      const done = plan.filter(task => task.status === 'completed').length
+      const work = eta?.work ?? null
+      // Claude Code draws no list for Claude's reports, so the band lists them, unless a task list or plan file has the rows.
+      const usesWork = work !== null && plan.length === 0
+      const list = usesWork ? workTasks(work) : plan
+      const unit = usesWork ? 'items' : steps.unit
+      const current = list.find(task => task.status === 'in_progress')
+      const named = current === undefined ? undefined : usesWork ? capitalize(current.subject) : (current.activeForm ?? current.subject)
+      const headline = named ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking'
+      const done = list.filter(task => task.status === 'completed').length
       const detail = detailOf(l)
       const stats = [
         stat('tools', plural(l.toolCalls, 'tool call')),
@@ -1182,7 +1204,7 @@ export const register: Register = (on, options) => {
       const src: DetailSource = {
         detail,
         agents: await read($, agents),
-        tasks: plan,
+        tasks: list,
         tokensIn: l.tokensIn,
         tokensOut: l.tokensOut,
         tokensCached: l.tokensCached,
@@ -1203,7 +1225,7 @@ export const register: Register = (on, options) => {
           </Box>
           <Text dimColor>
             {steps.source !== null ? `${steps.source} · ` : ''}
-            {plan.length > 0 ? `${done}/${plan.length} ${steps.unit} · ` : ''}
+            {list.length > 0 ? `${done}/${list.length} ${unit} · ` : ''}
             {duration(now - l.startedAt)}
           </Text>
         </Box>,
@@ -1229,8 +1251,8 @@ export const register: Register = (on, options) => {
         )
       }
 
-      if (showsStepRows(stepRows, steps.source !== null)) {
-        rows.push(...stepRowsOf(plan, Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1))))
+      if (usesWork ? stepRows !== 'never' : showsStepRows(stepRows, steps.source !== null)) {
+        rows.push(...stepRowsOf(list, Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1)), usesWork ? trailsOf(eta?.items) : {}))
       }
 
       return (
