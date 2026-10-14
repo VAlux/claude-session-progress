@@ -1431,9 +1431,10 @@ export const register: Register = (on, options) => {
             {sum.topTools.map(([tool, n]) => `${tool} ${n}`).join('  ')}
           </Text>
         )}
+        {/* The whole turn's time, as the first estimate put it and as it went: the time before that estimate counts on both sides. */}
         {sum.eta !== undefined && (
           <Text key="eta" dimColor wrap="truncate-end">
-            {`⏱ at ${duration(sum.eta.atMs)}: estimated ${etaValue(sum.eta.estimatedMs)} more${etaRange({ ms: sum.eta.estimatedMs, lowMs: sum.eta.lowMs, highMs: sum.eta.highMs }) ?? ''} · took ${duration(sum.eta.tookMs)} more`}
+            {`⏱ estimated ${etaValue(sum.eta.atMs + sum.eta.estimatedMs)}${etaRange({ ms: sum.eta.atMs + sum.eta.estimatedMs, lowMs: sum.eta.atMs + sum.eta.lowMs, highMs: sum.eta.atMs + sum.eta.highMs }) ?? ''} · took ${duration(sum.eta.atMs + sum.eta.tookMs)}`}
           </Text>
         )}
         {/* After one turn the session's totals are that turn's. */}

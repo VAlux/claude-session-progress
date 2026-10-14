@@ -458,13 +458,13 @@ test("an earlier turn's background subagent does not hold this turn's countdown"
   expect(has(await seen($, 'terminal'), /~1m 20s left/)).toBe(true)
 })
 
-test('the summary compares the first estimate with what followed', async ($, on) => {
+test('the summary compares the turn\'s time as first estimated with the time it took', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.m, MS.s] })
   await clock.advance(60_000)
   await $.turn.complete(done('t1', 75_000))
   await clock.advance(2_000)
-  expect(has(await seen($, 'terminal', false), /^⏱ at 10s: estimated ~1m 20s more · took 1m 05s more$/)).toBe(true)
+  expect(has(await seen($, 'terminal', false), /^⏱ estimated ~1m 30s · took 1m 15s$/)).toBe(true)
 })
 
 test('an interrupted turn has no accuracy line', async ($, on) => {
