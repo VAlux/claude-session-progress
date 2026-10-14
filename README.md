@@ -76,7 +76,7 @@ Each item is worked out in rounds (a model request and the tools it ran), from h
 
 The range, `(3–6m)`, comes from how much those past times varied. It narrows as items finish. The bar moves at the speed that reaches the end with the countdown, slows when the work grows, and waits at 97% until the turn ends.
 
-There is no countdown before Claude has said what is left — a report, a task list or a plan — while the turn waits on a subagent that has none, once Claude reports nothing left yet keeps working, and once an item runs past its range with no report for several rounds.
+There is no countdown before Claude has said what is left — a report, a task list or a plan — while the turn waits on a subagent that has none, once Claude reports nothing left yet keeps working, and once an item runs far past its range (twice its top) with no report for 12 rounds.
 
 What it learns is kept in the mod's own store, a JSON file under your Claude Code configuration directory: samples per size, the last 10 run times of each command per project, kept by a hash of the command rather than its text, and each turn's first estimate against what followed (the last 200), which is how its accuracy can be judged on your own turns. Each report is a tool call Claude makes alongside its others: tens of output tokens, and no extra model request. The tool's definition also adds a few hundred input tokens to each request, and a report Claude sends on its own costs a round. The reminder, when a turn gets one, is under 100 input tokens. Its rows are hidden from the transcript.
 

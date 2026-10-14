@@ -17,8 +17,10 @@ export const SEEDS: Sizes = {
 
 /** How many round-equivalents of evidence the seeds weigh against this turn's own, in *c*. */
 export const PRIOR_WEIGHT = 10
-/** Rounds without a report after which an item running past its range loses its estimate. */
-export const STALE_ROUNDS = 8
+/** Rounds without a report after which an item running far past its range loses its estimate. */
+export const STALE_ROUNDS = 12
+/** How many times its range's top an item must have run for, as well, to count as far past it. */
+export const STALE_OVERRUN = 2
 /** Where the bar waits until the turn ends. */
 export const FILL_CAP = 0.97
 /** The most one tick moves the bar: a laptop waking from sleep does not leap it ahead. */
@@ -221,8 +223,8 @@ export function estimate(x: EtaInput): EtaOutput {
   const spreads: Spread[] = []
   const items: EtaOutput['items'] = []
   for (const part of parts) {
-    // Far past its range with no report for a while: Claude may simply have stopped reporting.
-    if (part.spentMs !== null && part.spentMs > spreadOf(part.basis).highMs && x.roundsSinceReport >= STALE_ROUNDS) return NONE
+    // Far past its range with no report for a good while: Claude may simply have stopped reporting.
+    if (part.spentMs !== null && part.spentMs > STALE_OVERRUN * spreadOf(part.basis).highMs && x.roundsSinceReport >= STALE_ROUNDS) return NONE
     const spread = part.spentMs === null ? spreadOf(part.basis) : remainingOf(part.basis, part.spentMs, pace)
     spreads.push(spread)
     items.push({ key: part.key, ms: spread.ms })

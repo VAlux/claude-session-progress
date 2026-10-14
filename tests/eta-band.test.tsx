@@ -246,9 +246,9 @@ test('a plan file written in the default configuration gets its countdown, and k
   expect(has(shown, /◐ Write the hooks/), 'a plan file keeps its rows').toBe(true)
 })
 
-/** Eight rounds on, 10 s apart, with no report: the one item reported is far past its range, and the countdown is gone. */
+/** Seventeen rounds on, 10 s apart, with no report: the one item reported is far past its range, and the countdown is gone. */
 async function goStale($: Engine, clock: Clock) {
-  for (const index of [2, 3, 4, 5, 6, 7, 8, 9]) {
+  for (let index = 2; index <= 18; index++) {
     await clock.advance(10_000)
     await round($, index)
   }

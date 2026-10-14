@@ -242,11 +242,13 @@ test("a task list's estimate: the task in progress from when it began, the pendi
   expect(estimate(input({ tasks: { list: tasks(['pending', 'pending']), kind: 'planStep' } })).source).toBe('plan')
 })
 
-test('an item far past its range with no report for 8 rounds loses its estimate', () => {
+test('an item far past its range (twice its top) with no report for 12 rounds loses its estimate', () => {
   const list = tasks(['in_progress'])
-  const late = { tasks: { list, kind: 'task' as const }, since: { [taskKey(list[0]!)]: NOW - 80_000 } }
-  expect(estimate(input({ ...late, roundsSinceReport: 7 })).estimate?.ms).toBe(30_000)
-  expect(estimate(input({ ...late, roundsSinceReport: 8 })).estimate).toBeNull()
+  const since = (ago: number) => ({ tasks: { list, kind: 'task' as const }, since: { [taskKey(list[0]!)]: NOW - ago } })
+  // Range tops out at 78s: 160s is past twice that, 140s only past once.
+  expect(estimate(input({ ...since(160_000), roundsSinceReport: 11 })).estimate).not.toBeNull()
+  expect(estimate(input({ ...since(160_000), roundsSinceReport: 12 })).estimate).toBeNull()
+  expect(estimate(input({ ...since(140_000), roundsSinceReport: 30 })).estimate, 'past its range, not far past').not.toBeNull()
 })
 
 test('down to its answer, a list is one round; two rounds later, with Claude still at work, it is none', () => {
