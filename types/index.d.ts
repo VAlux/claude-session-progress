@@ -56,6 +56,8 @@ export type EtaTurn = {
   shownMs: number | null
   upUntil: number | null
   pending: EtaPending
+  /** Whether a call already reminded Claude to report this turn. Absent on a turn kept from before it existed. */
+  nudged?: boolean
 }
 
 /** One tool call as a band's details list it; `agentId` marks a subagent's. */

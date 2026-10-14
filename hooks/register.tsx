@@ -66,7 +66,7 @@ import {
   type TaskKind,
 } from './eta'
 import { flushHistory, loadHistory, seeded, type History, type LogRow, type Store } from './history'
-import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, parseReport, workTasks } from './report'
+import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, nudgeLine, parseReport, workTasks } from './report'
 
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
 const summary = atom({ plugin: 'session-progress', key: 'summary' } as const, null)
@@ -102,6 +102,8 @@ const SHOW_AFTER_MS = 20_000
 const SHOW_AFTER_TOOLS = 3
 const SHOW_WITH_PLAN_AFTER_MS = 8_000
 const SHOW_ALWAYS_AFTER_MS = 45_000
+// When a turn with nothing to count down reminds Claude, once, to report what is left.
+const NUDGE_AFTER_TOOLS = 5
 
 const FRAME_MS = 70
 const FINISH_MS = 1_400
@@ -456,6 +458,24 @@ async function takeReport($: Dollar, agentId: string | undefined, input: Record<
     await update($, etaTurn, eta => (eta === null || l === null ? eta : take(eta, detailOf(l), l.steps)))
   }
   await refreshEta($, now)
+}
+
+/**
+ * The reminder to report, the first time a turn reaches `NUDGE_AFTER_TOOLS` calls with no report, task list or plan.
+ * Marked in the same update that reads it, so calls that end together remind once.
+ */
+async function nudgeOf($: Dollar): Promise<string | null> {
+  if (!config.eta) return null
+  const calls = (await read($, live))?.toolCalls ?? 0
+  if (calls < NUDGE_AFTER_TOOLS) return null
+  if ((await readSteps($)).list.length > 0) return null
+  let isDue = false
+  await update($, etaTurn, eta => {
+    if (eta === null || eta.nudged === true || eta.work !== null) return eta
+    isDue = true
+    return { ...eta, nudged: true }
+  })
+  return isDue ? nudgeLine(calls) : null
 }
 
 /** A change to a task list or plan file is a report too, for the stale rule. */
@@ -848,6 +868,10 @@ export const register: Register = (on, options) => {
     }
     if (!failed && PLAN_FILE_TOOLS.has(e.tool) && path !== null && isMarkdown(path)) {
       await reportsPlanChange($, ended, () => trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null, isSub))
+    }
+    if (!isSub && ran.deny === undefined) {
+      const nudge = await nudgeOf($)
+      if (nudge !== null) return { ...ran, context: [...(ran.context ?? []), nudge] }
     }
 
     return ran

@@ -68,6 +68,7 @@ test('the system prompt asks for reports only when the tool is offered', async (
   const line = offered.sections.find(s => s.id === 'session-progress:eta')
   expect(line?.text).toContain(`report what is left with ${PROGRESS_TOOL}`)
   expect(line?.text).toContain('never on its own')
+  expect(line?.text, 'the first report comes with the first tool calls, not once the work is understood').toContain('first response that calls tools')
   const without = await $.prompt.compose({ ...base, tools: ['Bash'] })
   expect(without.sections.some(s => s.id === 'session-progress:eta')).toBe(false)
 })

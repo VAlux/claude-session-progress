@@ -10,7 +10,8 @@ export const PROGRESS_TOOL = 'mcp__session-progress__progress'
 
 const DESCRIPTION =
   'Reports the work left in this turn, for the progress display only. Use it during work that will take more than a few steps ' +
-  'when you keep no task list: start once you have a rough idea, and send it in the same response as your other tool calls, never on its own. ' +
+  'when you keep no task list: start in your first response that calls tools, with a rough guess if that is all you have, ' +
+  'and send it in the same response as your other tool calls, never on its own. ' +
   'List the items in order, the one you are on first. ' +
   'Give each a size: s — a quick change or lookup, about 1–2 tool calls; m — a few files or a few rounds, 3–8; ' +
   'l — a broad change or a debugging loop, 9 or more. When running a command is the item (a test suite, a build), ' +
@@ -48,9 +49,18 @@ export function etaLine(tools: readonly string[]): string | null {
   if (!tools.includes(PROGRESS_TOOL)) return null
   return (
     `During work that will take more than a few steps and has no task list, report what is left with ${PROGRESS_TOOL}. ` +
-    'Start as soon as you have a rough idea, even a guess; exploring counts as an item. Keep the item you are on first. ' +
+    'Send the first report in your first response that calls tools, before you know the details: a rough guess is fine, and exploring counts as an item. ' +
+    'Keep the item you are on first. ' +
     'Send {done: 1} when you finish it and send `left` again when the work changes. ' +
     'Always send it in the same response as your other tool calls, never on its own. It only feeds the progress display.'
+  )
+}
+
+/** The reminder a turn's call carries once the turn has run a few calls with nothing to count down. */
+export function nudgeLine(calls: number): string {
+  return (
+    `This turn has made ${calls} tool calls with no task list and no report, so the progress display has nothing to count down. ` +
+    `If more work is left, report it with ${PROGRESS_TOOL} in your next response, alongside your other tool calls. If you are about to answer, ignore this.`
   )
 }
 
