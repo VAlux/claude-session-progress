@@ -27,6 +27,7 @@ function engineBottom(on: On) {
   on('tool.call', ($, e) => {
     if (e.tool === 'Agent') return { result: { agentId: 'a1', agentType: 'Explore' } } as never
     if (e.tool === 'Bash' && e.command === 'false') return { result: 'Exit code 1\nboom', isError: true } as never
+    if (e.tool === 'Bash' && String(e.command).includes('refused')) return { deny: 'refused' } as never
     if (e.tool === 'Edit') {
       return {
         result: { structuredPatch: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 3, lines: [' keep', '-old', '+new', '+more'] }] },
@@ -200,4 +201,49 @@ test('line counts come from the tool\'s patch, else from what it was asked to wr
 
 test('files that share a name are told apart by their folder', () => {
   expect(shortPaths(['/r/src/index.ts', '/r/test/index.ts', '/r/README.md'])).toEqual(['src/index.ts', 'test/index.ts', 'README.md'])
+})
+
+const shellEdit = "python3 - <<'EOF'\nimport pathlib\np=pathlib.Path('/repo/server/http.ts'); s=p.read_text()\np.write_text(s)\nEOF"
+
+test('files a shell command writes count, and changes it cannot name add a hint', async ($, on) => {
+  await busyTurn($, on)
+  await $.tool.call({ tool: 'Bash', command: shellEdit })
+  await $.tool.call({ tool: 'Bash', command: 'git merge origin/main --no-edit' })
+  const ui = await mount($, 'terminal', true)
+  expect((await ui.find({ type: 'Button', key: 'stat-files' }))?.text).toMatch(/^✎ 3 files changed \(\+ shell edits\)$/)
+  await ui.press({ key: 'stat-files' })
+  const rows = await texts(ui)
+  await ui.unmount()
+  expect(rows.some(t => /^\s+http\.ts\s+changed$/.test(t)), 'the file the script wrote').toBe(true)
+  expect(rows.some(t => /shell changes it can't name: git merge/.test(t)), 'what it could not name').toBe(true)
+})
+
+test('a turn whose only change is a shell one it cannot name still shows the files stat, in the summary too', async ($, on) => {
+  engineBottom(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'work', turnId: 't1' })
+  await step($, 0)
+  await $.tool.call({ tool: 'Bash', command: 'git merge origin/main' })
+  for (const command of ["sed -n 1,5p a.ts > /dev/null", 'git status', 'npm test']) await $.tool.call({ tool: 'Bash', command })
+  await step($, 1)
+  await clock.advance(30_000)
+  const live = await mount($, 'terminal', true)
+  expect((await live.find({ type: 'Button', key: 'stat-files' }))?.text, 'live').toMatch(/^✎ files changed by shell$/)
+  await live.unmount()
+
+  await $.turn.complete({ turnId: 't1', durationMs: 30_000, answer: 'ok', isAborted: false, reason: 'answer' })
+  const done = await mount($, 'terminal', false)
+  expect((await done.find({ type: 'Button', key: 'stat-files' }))?.text, 'summary').toMatch(/^✎ files changed by shell$/)
+  await done.unmount()
+})
+
+test('a refused shell command wrote nothing', async ($, on) => {
+  engineBottom(on)
+  mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'work', turnId: 't1' })
+  await step($, 0)
+  await $.tool.call({ tool: 'Bash', command: 'echo refused > a.ts' })
+  const ui = await mount($, 'terminal', true)
+  expect(await ui.find({ type: 'Button', key: 'stat-files' })).toBeFalsy()
+  await ui.unmount()
 })

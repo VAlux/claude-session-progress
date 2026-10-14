@@ -4,6 +4,7 @@ import type { Color, Elements, EngineInterface, Register, Timer } from 'claude-c
 import type { AgentRun, Detail, EtaPending, EtaTurn, Live, PlanFile, PlanTask, Spread, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
 import {
   ICONS,
+  changedFiles,
   detailLines,
   detailOf,
   editLines,
@@ -14,6 +15,7 @@ import {
   withCall,
   withFile,
   withRead,
+  withShellEdits,
   withStep,
   type DetailLine,
   type DetailSource,
@@ -67,6 +69,7 @@ import {
 } from './eta'
 import { flushHistory, loadHistory, seeded, type History, type LogRow, type Store } from './history'
 import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, nudgeLine, parseReport, workTasks } from './report'
+import { shellWrites } from './shell'
 
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
 const summary = atom({ plugin: 'session-progress', key: 'summary' } as const, null)
@@ -614,6 +617,9 @@ const stat = (kind: StatKind, text: string, color?: Color): Stat => (color === u
 
 /** Files changed, with the lines added and removed where every write could be measured. */
 export function filesStat(detail: Detail, count = detail.files.length): Stat {
+  // A shell command that changed files it did not name: the count is a floor, and its lines are not the turn's.
+  const isShell = (detail.shellEdits?.length ?? 0) > 0
+  if (isShell) return stat('files', count === 0 ? 'files changed by shell' : `${plural(count, 'file')} changed (+ shell edits)`)
   const measured = detail.files.length > 0 && detail.files.every(f => f.added !== null && f.removed !== null)
   if (!measured) return stat('files', `${plural(count, 'file')} changed`)
   const lines = detail.files.reduce((sum, f) => ({ added: sum.added + (f.added ?? 0), removed: sum.removed + (f.removed ?? 0) }), { added: 0, removed: 0 })
@@ -808,6 +814,11 @@ export const register: Register = (on, options) => {
     const wrote = !failed && WRITE_TOOLS.has(e.tool) && path !== null
     const lines = wrote ? editLines(e.tool, input, ran.result) : null
     const isRead = !failed && e.tool === 'Read' && path !== null
+    // A command's writes count though it failed later on; one refused never ran.
+    const shell =
+      e.tool === 'Bash' && ran.deny === undefined && typeof input.command === 'string'
+        ? shellWrites(input.command, await $.session.cwd().catch(() => null))
+        : null
     const started = (ran.result as { agentId?: unknown; agentType?: unknown } | undefined) ?? {}
     const startedId = !failed && isAgent && typeof started.agentId === 'string' ? started.agentId : null
     /** What this call adds to a turn's or a run's details once it has run. */
@@ -815,6 +826,10 @@ export const register: Register = (on, options) => {
       let out = finishCall(d, e.tool_use_id, finished)
       if (path !== null && wrote) out = withFile(out, path, lines)
       if (path !== null && isRead) out = withRead(out, path)
+      if (shell !== null) {
+        for (const p of shell.paths) out = withFile(out, p, null)
+        out = withShellEdits(out, shell.unnamed)
+      }
       if (startedId !== null) out = withAgent(out, startedId)
       return out
     }
@@ -1139,7 +1154,7 @@ export const register: Register = (on, options) => {
       const detail = detailOf(run)
       const stats = [
         stat('tools', plural(run.toolCalls, 'tool call')),
-        detail.files.length > 0 && filesStat(detail),
+        changedFiles(detail) && filesStat(detail),
         detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
         run.steps > 0 && stat('steps', plural(run.steps, 'step')),
         run.tokensOut > 0 && stat('tokens', `${tokens(run.tokensIn)}↑ ${tokens(run.tokensOut)}↓`),
@@ -1252,7 +1267,7 @@ export const register: Register = (on, options) => {
       const stats = [
         stat('tools', plural(l.toolCalls, 'tool call')),
         l.subagents > 0 && stat('subagents', `${plural(l.subagents, 'subagent')} (${l.subagentToolCalls} calls)`),
-        detail.files.length > 0 && filesStat(detail),
+        changedFiles(detail) && filesStat(detail),
         detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
         stat('steps', plural(l.steps, 'step')),
         l.tokensOut > 0 && stat('tokens', `${tokens(l.tokensIn)}↑ ${tokens(l.tokensOut)}↓${(l.cost ?? 0) > 0 ? ` · ${usd(l.cost ?? 0)}` : ''}`),
@@ -1367,7 +1382,7 @@ export const register: Register = (on, options) => {
     const work = [
       stat('tools', plural(sum.toolCalls, 'tool call')),
       sum.subagents > 0 && stat('subagents', `${plural(sum.subagents, 'subagent')} (${sum.subagentToolCalls} calls)`),
-      sum.files > 0 && filesStat(detail, sum.files),
+      (sum.files > 0 || changedFiles(detail)) && filesStat(detail, sum.files),
       detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
       stat('steps', plural(sum.steps, 'model step')),
       sum.tasksTotal > 0 &&

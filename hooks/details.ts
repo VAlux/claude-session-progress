@@ -9,6 +9,7 @@ const MAX_CALLS = 500
 const MAX_FILES = 500
 const MAX_READS = 500
 const MAX_STEPS = 300
+const MAX_SHELL_EDITS = 100
 
 /** The glyph each stat is drawn with, so its kind reads at a glance. */
 export const ICONS: Record<StatKind, string> = {
@@ -48,6 +49,14 @@ export function withFile(d: Detail, path: string, lines: { added: number; remove
     files: d.files.map(f => (f.path === path ? { path, added: add(f.added, lines?.added), removed: add(f.removed, lines?.removed) } : f)),
   }
 }
+
+/** Shell commands that changed files they do not name. */
+export function withShellEdits(d: Detail, labels: readonly string[]): Detail {
+  return labels.length === 0 ? d : { ...d, shellEdits: [...(d.shellEdits ?? []), ...labels].slice(-MAX_SHELL_EDITS) }
+}
+
+/** Whether a turn changed files: by name, or by a shell command that did not name them. */
+export const changedFiles = (d: Detail): boolean => d.files.length > 0 || (d.shellEdits?.length ?? 0) > 0
 
 export function withRead(d: Detail, path: string): Detail {
   return d.reads.includes(path) ? d : { ...d, reads: [...d.reads, path].slice(-MAX_READS) }
@@ -273,7 +282,9 @@ export function detailLines(kind: StatKind, src: DetailSource, room: number): De
       return first(rows, room)
     }
     case 'files': {
-      if (d.files.length === 0) return [{ key: 'none', text: 'No files changed yet', isNote: true }]
+      const shell = d.shellEdits ?? []
+      const hint: DetailLine[] = shell.length === 0 ? [] : [{ key: 'shell', text: `+ shell changes it can't name: ${toolTally(shell)}`, isNote: true }]
+      if (d.files.length === 0) return hint.length > 0 ? hint : [{ key: 'none', text: 'No files changed yet', isNote: true }]
       const names = shortPaths(d.files.map(f => f.path))
       const width = Math.min(40, Math.max(...names.map(n => n.length)))
       const rows = d.files.map(
@@ -283,7 +294,7 @@ export function detailLines(kind: StatKind, src: DetailSource, room: number): De
           ...(f.added === null || f.removed === null ? { trail: 'changed' } : { lines: { added: f.added, removed: f.removed } }),
         }),
       )
-      return first(rows, room)
+      return [...hint, ...first(rows, room - hint.length)].slice(0, room)
     }
     case 'reads': {
       if (d.reads.length === 0) return [{ key: 'none', text: 'No files read yet', isNote: true }]

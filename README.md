@@ -45,7 +45,7 @@ Each count under the bar is a button. Click it, or focus the band with `ctrl+x t
 | --- | --- |
 | ⚒ tool calls | A tally by tool, then the latest calls: ✓ done, ◐ running, ✗ failed (with why), and how long each took |
 | ⑂ subagents | Each subagent the turn started: its description and type, its calls, output tokens and time, and what it is doing now |
-| ✎ files | Each file changed, by name, with the lines added and removed (`a.ts  +12 −3`). Two files with one name show their folder too |
+| ✎ files | Each file changed, by name, with the lines added and removed (`a.ts  +12 −3`). Two files with one name show their folder too. Shell commands that changed files they don't name are listed first (`+ shell changes it can't name: git merge`) |
 | ⌕ read | The files read, side by side |
 | ↻ steps | Time spent in the model and in tools, then each model request: the tools it called, its tokens and its time |
 | ⇅ tokens | The estimated cost, input split into fresh, cache read and cache write, output per step, the context at the last step, and the model |
@@ -55,6 +55,8 @@ Each count under the bar is a button. Click it, or focus the band with `ctrl+x t
 A list shows its latest rows, with a `+N earlier` (or `+N more`) row when others do not fit. Press that row to list them all, up to the room the band has, and press `▴ show fewer` to go back. Closing the list or opening another one starts it capped again.
 
 The summary keeps the finished turn's details, so you can open them after the turn ends. Line counts come from each edit's own patch. A notebook edit, or a rewrite of a file too large to diff, has no line count, and its file reads `changed` instead.
+
+Files changed through Bash count too, as far as the command's text tells: a redirect, `tee`, `sed -i`, `perl -pi`, `rm`/`mv`/`cp`, `git mv`/`rm`/`restore`, and a Python, Node or Ruby script that writes a literal path. These read `changed`. Some commands change files without naming them: `git merge`, `git checkout` of a branch, `git stash pop`, `prettier --write`, a script that writes a path it computes. After one of those, the count reads `3 files changed (+ shell edits)`, or `files changed by shell` when that is all the turn changed, because the real number may be higher.
 
 ## How progress is measured
 

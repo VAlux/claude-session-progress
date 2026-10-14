@@ -88,6 +88,8 @@ export type Detail = {
   reads: string[]
   stepLog: StepRecord[]
   agentIds: string[]
+  /** Per shell command that changed files it does not name, what it was (`git merge`, `python3`). Absent on a turn kept from before it existed. */
+  shellEdits?: string[]
 }
 
 /** Which stat's details the band lists under its stats row. */
