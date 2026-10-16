@@ -59,6 +59,8 @@ export type EtaTurn = {
   shownMs: number | null
   upUntil: number | null
   pending: EtaPending
+  /** The estimate as last worked out before calibration, for a main turn that waits on this loop. Absent on a turn kept from before it existed. */
+  lastRaw?: Spread | null
   /** Whether a call already reminded Claude to report this turn. Absent on a turn kept from before it existed. */
   nudged?: boolean
   /** The `lastReportRound` of the report a call last reminded Claude may be out of date. Absent on a turn kept from before it existed. */

@@ -62,15 +62,17 @@ export function calibrationOf(rows: readonly CalRow[]): Calibration {
 }
 
 /**
- * A loop's whole estimate with the log's correction: its time scaled by the bias, its range widened or narrowed about it.
- * Both give way to the turn's own evidence as its items finish (`evidence`, in round-equivalents, as *c* weighs it); the low end stays a round or more.
+ * A loop's whole estimate with the log's correction: its time scaled by the bias, all but `measuredMs` (commands timed here, whose time is
+ * their own), and its range widened or narrowed about it. Both give way to the turn's own evidence as its items finish (`evidence`, in
+ * round-equivalents, as *c* weighs it); the low end stays a round or more.
  */
-export function calibrated(raw: Spread, cal: Calibration, evidence: number, pace: number): Spread {
+export function calibrated(raw: Spread, cal: Calibration, evidence: number, pace: number, measuredMs = 0): Spread {
   if (cal.bias === 1 && cal.widen === 1) return raw
   const share = PRIOR_WEIGHT / (PRIOR_WEIGHT + Math.max(0, evidence))
   const bias = cal.bias ** share
   const widen = cal.widen ** share
-  const ms = raw.ms * bias
+  const measured = Math.min(raw.ms, Math.max(0, measuredMs))
+  const ms = measured + (raw.ms - measured) * bias
   const lowMs = raw.lowMs > 0 ? ms * (raw.lowMs / raw.ms) ** widen : 0
   const highMs = ms * (raw.highMs / raw.ms) ** widen
   return { ms, lowMs: Math.min(ms, Math.max(pace, lowMs)), highMs: Math.max(ms, highMs) }

@@ -2,6 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { commandKey } from '../hooks/eta'
+import type { LogRow } from '../hooks/history'
 import { PROGRESS_TOOL } from '../hooks/report'
 
 const PLUGIN = 'session-progress'
@@ -53,10 +55,13 @@ async function round($: Engine, index: number, loop: { turnId?: string; agentId?
   }
 }
 
-/** A turn with two rounds 10 s apart, so its pace is 10 s; the clock stands 10 s into the turn. The store holds `entries` at the start. */
-async function pacedTurn($: Engine, on: On, entries?: Record<string, unknown>) {
+/** The mod's store in memory, holding `entries` at the start. */
+const stored = (entries: Record<string, unknown>) => (on: On) => mock.store(on, entries)
+
+/** A turn with two rounds 10 s apart, so its pace is 10 s; the clock stands 10 s into the turn. `store` answers the mod's store. */
+async function pacedTurn($: Engine, on: On, store: (on: On) => void = stored({})) {
   const { release } = engineBottom(on)
-  mock.store(on, entries)
+  store(on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.turn.start({ text: 'build it', turnId: 't1' })
   await round($, 0)
@@ -448,9 +453,9 @@ test('a task list keeps its rows and count when Claude also reports: Claude Code
 })
 
 /** A main turn that starts subagent a1, whose own rounds are 10 s apart; the clock stands 10 s in. */
-async function withSubagent($: Engine, on: On) {
+async function withSubagent($: Engine, on: On, store: (on: On) => void = stored({})) {
   engineBottom(on)
-  mock.store(on)
+  store(on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.turn.start({ text: 'review the branch', turnId: 't1' })
   for (const command of ['git status', 'git log', 'git diff']) await $.tool.call({ tool: 'Bash', command })
@@ -539,7 +544,7 @@ const logged = (n: number, row: Record<string, unknown> = {}) =>
   Array.from({ length: n }, (_, i) => ({ at: i, firstAtMs: 10_000, estimatedMs: 60_000, lowMs: 40_000, highMs: 90_000, tookMs: 120_000, source: 'progress', ...row }))
 
 test('past turns that took twice their first estimate scale the countdown up', async ($, on) => {
-  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': logged(50) })
+  const { clock } = await pacedTurn($, on, stored({ 'eta.version': 1, 'eta.log': logged(50) }))
   await report($, { left: [MS.m, MS.s] })
   await clock.advance(1_000)
   // 79 s raw, times 2^(5/6): about 2m 21s, which reads in whole minutes.
@@ -547,7 +552,7 @@ test('past turns that took twice their first estimate scale the countdown up', a
 })
 
 test('fewer than 5 past turns on record leave the countdown as it was', async ($, on) => {
-  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': logged(4) })
+  const { clock } = await pacedTurn($, on, stored({ 'eta.version': 1, 'eta.log': logged(4) }))
   await report($, { left: [MS.m, MS.s] })
   await clock.advance(1_000)
   expect(has(await seen($, 'terminal'), /~1m 20s left/)).toBe(true)
@@ -556,20 +561,55 @@ test('fewer than 5 past turns on record leave the countdown as it was', async ($
 test('the calibration measures each past estimate before calibration, so a correction that worked is kept, not undone', async ($, on) => {
   // Shown at 2m and right, but 1m before calibration: turns still take twice the raw estimate.
   const right = logged(50, { estimatedMs: 120_000, lowMs: 80_000, highMs: 180_000, raw: { ms: 60_000, lowMs: 40_000, highMs: 90_000 } })
-  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': right })
+  const { clock } = await pacedTurn($, on, stored({ 'eta.version': 1, 'eta.log': right }))
   await report($, { left: [MS.m, MS.s] })
   await clock.advance(1_000)
   expect(has(await seen($, 'terminal'), /~2m left/)).toBe(true)
 })
 
 test("the summary's estimate is the calibrated one the band showed", async ($, on) => {
-  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': logged(50) })
+  const { clock } = await pacedTurn($, on, stored({ 'eta.version': 1, 'eta.log': logged(50) }))
   await report($, { left: [MS.m, MS.s] })
   await clock.advance(60_000)
   await $.turn.complete(done('t1', 75_000))
   await clock.advance(2_000)
   // 80 s raw at the first look, times 2^(5/6), from 10 s in: about 2m 33s, read as ~3m.
   expect(has(await seen($, 'terminal', false), /^⏱ estimated ~3m/)).toBe(true)
+})
+
+/** A store in memory, as `mock.store` keeps one, holding `entries` at the start; it also hands back the last row the mod wrote to its log. */
+function loggingStore(entries: Record<string, unknown>) {
+  let log: LogRow[] = []
+  const store = (on: On) => {
+    const data = new Map<string, unknown>(Object.entries(entries))
+    on('store.get', ($, e) => ({ value: data.get(e.key) }))
+    on('store.set', ($, e) => {
+      data.set(e.key, JSON.parse(JSON.stringify(e.value)))
+      if (e.key === 'eta.log') log = e.value as LogRow[]
+      return { value: undefined }
+    })
+  }
+  return { store, lastRow: () => log[log.length - 1] }
+}
+
+test('a turn logs its first estimate before calibration beside the calibrated one it showed', async ($, on) => {
+  const { store, lastRow } = loggingStore({ 'eta.version': 1, 'eta.log': logged(50) })
+  const { clock } = await pacedTurn($, on, store)
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(60_000)
+  await $.turn.complete(done('t1', 75_000))
+  const row = lastRow()
+  expect(row?.raw?.ms).toBe(80_000)
+  expect(Math.round(row?.estimatedMs ?? 0)).toBe(Math.round(80_000 * 2 ** (5 / 6)))
+})
+
+test('a measured command keeps its own time: the correction scales only the rest', async ($, on) => {
+  const commands = { '/repo': { [commandKey('npm test')]: { samples: [600_000, 600_000, 600_000, 600_000, 600_000], lastUsed: 1 } } }
+  const { clock } = await pacedTurn($, on, stored({ 'eta.version': 1, 'eta.log': logged(50), 'eta.commands': commands }))
+  await report($, { left: [{ do: 'test', run: 'npm test' }, MS.s] })
+  await clock.advance(1_000)
+  // 599 s of npm test as measured, and 30 s more times 2^(5/6): ~11m. Scaling the command too would read ~19m.
+  expect(has(await seen($, 'terminal'), /~11m left/)).toBe(true)
 })
 
 test('an interrupted turn has no accuracy line', async ($, on) => {
@@ -599,3 +639,35 @@ for (const [name, ended, headline, shares] of [
     expect(shown.bars.some(text => /%/.test(text))).toBe(shares)
   })
 }
+
+test('a subagent resumed after it answered does not learn its open item again', async ($, on) => {
+  const clock = await withSubagent($, on)
+  await report($, { left: [{ do: 'a', size: 's' }] }, 'a1')
+  await rounds($, clock, 2, 21, { agentId: 'a1' })
+  await $.turn.complete({ ...done('a1-turn', 210_000), agentId: 'a1' } as never)
+  // Sent another message: a call of its own, more rounds, another answer.
+  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' } as never)
+  await rounds($, clock, 22, 41, { agentId: 'a1' })
+  await $.turn.complete({ ...done('a1-turn-2', 200_000), agentId: 'a1' } as never)
+  await $.turn.complete(done('t1', 420_000))
+  await restart($)
+  await pacedNext($, clock, 't2')
+  await report($, { left: [{ do: 'b', size: 's' }, { do: 'c', size: 's' }] })
+  await clock.advance(1_000)
+  // Learned once, the 20 rounds make an `s` 2.5 (~1m); learned again from its first start, 20 and 40 make it 3 (~1m 10s).
+  expect(has(await seen($, 'terminal'), /~1m left/)).toBe(true)
+})
+
+test("a main turn waiting on a subagent logs the subagent's estimate before calibration as its raw one", async ($, on) => {
+  const { store, lastRow } = loggingStore({ 'eta.version': 1, 'eta.log': logged(50) })
+  const clock = await withSubagent($, on, store)
+  await report($, { left: [MS.l] }, 'a1')
+  await round($, 0)
+  await clock.advance(10_000)
+  await round($, 1)
+  await report($, { left: [MS.s] })
+  await $.turn.complete({ ...done('a1-turn', 20_000), agentId: 'a1' } as never)
+  await $.turn.complete(done('t1', 30_000))
+  // a1's `l` at 10 s in: 110 s and a round, 120 s before calibration (about 3m 34s after it).
+  expect(Math.round(lastRow()?.raw?.ms ?? 0)).toBe(120_000)
+})

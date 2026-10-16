@@ -403,8 +403,11 @@ async function flush($: Dollar, pending: EtaPending, isAborted: boolean, row: Lo
   await flushing
 }
 
+/** A subagent's estimate as a main turn waiting on it combines it: as shown, and before calibration. */
+type Waited = { shown: Spread | null; raw: Spread | null }
+
 /** One loop's countdown worked out again: its finished tasks learned, its estimate made and calibrated, its bar moved on. */
-function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], rounds: number, now: number, waitedOn: readonly (Spread | null)[] | null): EtaTurn {
+function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], rounds: number, now: number, waitedOn: readonly Waited[] | null): EtaTurn {
   const pace = paceOf(detail, eta.runs)
   const learned = tasks === null ? eta : learnTasks(eta, tasks.list, tasks.kind, now, pace, history.sizes)
   const own = estimate({
@@ -421,8 +424,11 @@ function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], round
   })
   // Past turns' correction goes on the whole estimate, not on its items: it stands mostly for work the first list did not name.
   const raw = own.estimate
-  const shown = raw === null || pace === null ? raw : calibrated(raw, history.calibration, learned.estimated, pace)
-  const out = waitedOn === null ? { ...own, estimate: shown, raw } : { ...own, estimate: combine(shown, waitedOn), raw: combine(raw, waitedOn) }
+  const shown = raw === null || pace === null ? raw : calibrated(raw, history.calibration, learned.estimated, pace, own.measuredMs)
+  const out =
+    waitedOn === null
+      ? { ...own, estimate: shown, raw }
+      : { ...own, estimate: combine(shown, waitedOn.map(w => w.shown)), raw: combine(raw, waitedOn.map(w => w.raw)) }
   return tickEta(learned, out, now)
 }
 
@@ -441,12 +447,12 @@ async function refreshEta($: Dollar, now: number) {
   // While the turn is live, a subagent an earlier turn started is not its to wait on; after it, the ones still running are what the wait is.
   const waitedOn = (await read($, agents))
     .filter(run => run.dispatchedByMain && isRunning(run) && (l === null || turnStart === undefined || run.startedAt >= turnStart))
-    .map(run => run.eta?.last ?? null)
+    .map((run): Waited => ({ shown: run.eta?.last ?? null, raw: run.eta === undefined ? null : run.eta.lastRaw === undefined ? run.eta.last : run.eta.lastRaw }))
   const steps = await readSteps($)
   await update($, etaTurn, eta => {
     if (eta === null) return eta
     // After the turn's own end, only the subagents it waits on are left to estimate.
-    if (l === null) return tickEta(eta, { estimate: combine(null, waitedOn), items: [], source: null }, now)
+    if (l === null) return tickEta(eta, { estimate: combine(null, waitedOn.map(w => w.shown)), raw: combine(null, waitedOn.map(w => w.raw)), items: [], source: null }, now)
     return refreshed(eta, detailOf(l), steps.list.length > 0 ? { list: steps.list, kind: taskKind(steps) } : null, l.steps, now, waitedOn)
   })
 }
@@ -936,7 +942,8 @@ export const register: Register = (on, options) => {
         durationMs: e.durationMs,
         reason: e.reason,
         running: [],
-        ...(run.eta === undefined ? {} : { eta: { ...run.eta, pending: emptyPending() } }),
+        // Its open item, learned now, stays learned: a message sent to it later starts from there.
+        ...(ended === undefined ? {} : { eta: { ...ended, pending: emptyPending() } }),
       }))
       if (ended !== undefined) await flush($, ended.pending, e.reason === 'aborted', null)
       if ((await read($, live)) === null && !(await read($, agents)).some(isRunning)) stopTicking()

@@ -352,3 +352,22 @@ test("the closing round began at the last request's start", () => {
   expect(closingAt(detail([]))).toBeNull()
   expect(closingAt(detail([step()]))).toBeNull()
 })
+
+test('the open item learned at the answer is marked finished, so a loop resumed later never learns it again', () => {
+  const eta = { ...freshEta(0), work: { items: [{ do: 'a', size: 's' as const }], finished: ['z'], topSince: 10_000 } }
+  expect(learnOpenTop(eta, 40_000, 10_000, SEEDS).work).toEqual({ items: [], finished: ['z', 'a'], topSince: 40_000 })
+})
+
+test("a Progress list's estimate says how much of it measured commands make up", () => {
+  const key = commandKey('npm test')
+  const out = estimate(input({ work: { items: [{ do: 'test', run: 'npm test' }, { do: 'b', size: 's' }, { do: 'c', run: 'make' }], finished: [], topSince: NOW }, commands: { [key]: [600_000, 600_000, 600_000, 600_000, 600_000] } }))
+  // npm test as measured; `make` was never timed, so it is a guess, and the correction may scale it.
+  expect(out.measuredMs).toBe(600_000)
+})
+
+test('each look keeps its estimate before calibration too, for a main turn that waits on this loop', () => {
+  const shown = { ms: 160_000, lowMs: 80_000, highMs: 320_000 }
+  const raw = { ms: 80_000, lowMs: 40_000, highMs: 160_000 }
+  expect(tickEta(freshEta(NOW), { estimate: shown, raw, items: [], source: 'progress' }, NOW + 10_000).lastRaw).toEqual(raw)
+  expect(tickEta(freshEta(NOW), { estimate: shown, items: [], source: 'progress' }, NOW + 10_000).lastRaw, 'none given: the estimate was not calibrated').toEqual(shown)
+})

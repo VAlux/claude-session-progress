@@ -70,3 +70,7 @@ test('a calibrated range keeps its low end a round or more, yet never above the 
   expect(round(calibrated({ ms: 12_000, lowMs: 10_000, highMs: 20_000 }, { bias: 0.5, widen: 1, turns: 50 }, 0, PACE))).toEqual({ ms: 6_000, lowMs: 6_000, highMs: 10_000 })
   expect(round(calibrated({ ms: 60_000, lowMs: 15_000, highMs: 90_000 }, { bias: 1, widen: 3, turns: 50 }, 0, PACE)).lowMs).toBe(PACE)
 })
+
+test("measured command time is left out of the bias's reach; the range still follows the whole", () => {
+  expect(round(calibrated({ ms: 60_000, lowMs: 40_000, highMs: 90_000 }, { bias: 2, widen: 1, turns: 50 }, 0, PACE, 30_000))).toEqual({ ms: 90_000, lowMs: 60_000, highMs: 135_000 })
+})

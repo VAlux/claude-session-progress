@@ -186,8 +186,11 @@ export type EtaInput = {
   roundsSinceReport: number
 }
 
-/** A loop's estimate, each item's own (the time left on the one in progress, the others' medians), what it rests on, and the estimate before calibration. */
-export type EtaOutput = { estimate: Spread | null; items: { key: string; ms: number }[]; source: EtaSource | null; raw?: Spread | null }
+/**
+ * A loop's estimate, each item's own (the time left on the one in progress, the others' medians), what it rests on, the estimate before
+ * calibration, and how much of it is measured command time (`run` items whose command was timed here).
+ */
+export type EtaOutput = { estimate: Spread | null; items: { key: string; ms: number }[]; source: EtaSource | null; raw?: Spread | null; measuredMs?: number }
 
 const NONE: EtaOutput = { estimate: null, items: [], source: null }
 
@@ -195,7 +198,8 @@ const NONE: EtaOutput = { estimate: null, items: [], source: null }
 export function estimate(x: EtaInput): EtaOutput {
   if (x.pace === null || !(x.pace > 0)) return NONE
   const pace = x.pace
-  type Part = { key: string; basis: Basis; spentMs: number | null }
+  /** `isMeasured`: a `run` item whose command has been timed here, so its time is that command's own. */
+  type Part = { key: string; basis: Basis; spentMs: number | null; isMeasured: boolean }
   let parts: Part[]
   let source: EtaSource
   const work = x.work
@@ -205,13 +209,14 @@ export function estimate(x: EtaInput): EtaOutput {
       key: `work-${i}`,
       basis: item.run !== undefined ? commandBasis(x.commands[commandKey(item.run)], x.sizes.m, pace, x.c) : sizedBasis(x.sizes[item.size ?? 'm'], pace, x.c),
       spentMs: i > 0 ? null : x.now - (item.run !== undefined && x.runningSince !== null ? x.runningSince : work.topSince),
+      isMeasured: item.run !== undefined && (x.commands[commandKey(item.run)]?.length ?? 0) > 0,
     }))
   } else if (x.tasks !== null && x.tasks.list.length > 0) {
     source = x.tasks.kind === 'task' ? 'tasks' : 'plan'
     const basis = sizedBasis(x.sizes[x.tasks.kind], pace, x.c)
     parts = x.tasks.list
       .filter(task => task.status !== 'completed')
-      .map(task => ({ key: task.id, basis, spentMs: task.status === 'in_progress' ? x.now - (x.since[taskKey(task)] ?? x.now) : null }))
+      .map(task => ({ key: task.id, basis, spentMs: task.status === 'in_progress' ? x.now - (x.since[taskKey(task)] ?? x.now) : null, isMeasured: false }))
   } else {
     return NONE
   }
@@ -222,15 +227,17 @@ export function estimate(x: EtaInput): EtaOutput {
 
   const spreads: Spread[] = []
   const items: EtaOutput['items'] = []
+  let measuredMs = 0
   for (const part of parts) {
     // Far past its range with no report for a good while: Claude may simply have stopped reporting.
     if (part.spentMs !== null && part.spentMs > STALE_OVERRUN * spreadOf(part.basis).highMs && x.roundsSinceReport >= STALE_ROUNDS) return NONE
     const spread = part.spentMs === null ? spreadOf(part.basis) : remainingOf(part.basis, part.spentMs, pace)
     spreads.push(spread)
     items.push({ key: part.key, ms: spread.ms })
+    if (part.isMeasured) measuredMs += spread.ms
   }
   const total = totalOf(spreads, pace)
-  return isUsable(total) ? { estimate: total, items, source } : NONE
+  return isUsable(total) ? { estimate: total, items, source, measuredMs } : NONE
 }
 
 /** A loop's samples before any are gathered. */
@@ -287,7 +294,10 @@ export const closingAt = (detail: Detail): number | null => detail.stepLog[detai
 export function learnOpenTop(eta: EtaTurn, closing: number | null, pace: number | null, sizes: Sizes): EtaTurn {
   const work = eta.work
   if (work === null || work.items.length !== 1 || closing === null || !(closing > work.topSince)) return eta
-  return learnItem(eta, { item: work.items[0]!, since: work.topSince }, closing, pace, sizes)
+  const top = work.items[0]!
+  // Marked finished, so a subagent sent another message later never learns it again.
+  const learned = learnItem(eta, { item: top, since: work.topSince }, closing, pace, sizes)
+  return { ...learned, work: { items: [], finished: [...work.finished, top.do], topSince: closing } }
 }
 
 /** Notes when each task came into progress, and learns the ones that finished since, each once. */
@@ -328,5 +338,6 @@ export function tickEta(eta: EtaTurn, out: EtaOutput, now: number): EtaTurn {
   const fill = last === null ? eta.fill : eta.fill === null ? startFill(elapsed, last.ms) : advanceFill(eta.fill, now - eta.lastTickAt, last.ms)
   const shown = last === null ? null : shownMs(last.ms)
   const grew = shown !== null && eta.shownMs !== null && shown > eta.shownMs
-  return { ...eta, last, items: out.items, first, fill, lastTickAt: now, shownMs: shown ?? eta.shownMs, upUntil: grew ? now + UP_MS : eta.upUntil }
+  const lastRaw = out.raw === undefined ? last : out.raw
+  return { ...eta, last, lastRaw, items: out.items, first, fill, lastTickAt: now, shownMs: shown ?? eta.shownMs, upUntil: grew ? now + UP_MS : eta.upUntil }
 }
