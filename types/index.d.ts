@@ -43,8 +43,11 @@ export type EtaTurn = {
   /** The estimate as last worked out, and each listed item's own: the time left on the one in progress, the median of the rest. */
   last: Spread | null
   items: { key: string; ms: number }[]
-  /** The first estimate, for the summary: when it came, what it said, and what it rested on. */
-  first: (Spread & { atMs: number; source: 'progress' | 'tasks' | 'plan' }) | null
+  /**
+   * The first estimate, for the summary and the log: when it came, what it said, what it rested on, and what it said before
+   * calibration (`raw`, absent on a turn kept from before it existed).
+   */
+  first: (Spread & { atMs: number; source: 'progress' | 'tasks' | 'plan'; raw?: Spread }) | null
   fill: number | null
   lastTickAt: number
   /** The loop's round count at its last report, for the stale rule. */

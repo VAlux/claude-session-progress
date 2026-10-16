@@ -1,14 +1,17 @@
 import { expect, test } from 'claude-code/testing'
 
+import { NO_CALIBRATION } from '../hooks/calibrate'
 import { SEEDS } from '../hooks/eta'
 import {
   BOUNDS,
   appendLog,
   flushHistory,
   loadHistory,
+  logRowOf,
   mergeCommands,
   mergeSizes,
   readCommands,
+  readLog,
   readSizes,
   type LogRow,
   type Store,
@@ -144,4 +147,39 @@ test('samples that are not finite and positive are dropped, and the history they
   const loaded = await loadHistory(store, '/repo')
   expect(loaded.sizes.s).toEqual([1, 1.5, 2, 3, 4, 5])
   expect(loaded.commands).toEqual({ ok: [1_000] })
+})
+
+/** `n` turns first estimated at 1m (40 s–1m 30s) that took 2m. */
+const twice = (n: number): LogRow[] => Array.from({ length: n }, (_, i) => ({ ...row(i), estimatedMs: 60_000, lowMs: 40_000, highMs: 90_000, tookMs: 120_000 }))
+/** A ratio to 4 decimals: the kit's `expect` has no `toBeCloseTo`. */
+const near = (x: number | undefined) => Math.round((x ?? Number.NaN) * 10_000)
+
+test("the history's calibration is read from the log; none when the store is empty, of another version, or fails", async () => {
+  expect((await loadHistory(memoryStore().store, '/repo')).calibration).toEqual(NO_CALIBRATION)
+  expect((await loadHistory(memoryStore({ 'eta.version': 2, 'eta.log': twice(50) }).store, '/repo')).calibration).toEqual(NO_CALIBRATION)
+  const broken: Store = { get: async () => { throw new Error('no store') }, set: async () => {} }
+  expect((await loadHistory(broken, '/repo')).calibration).toEqual(NO_CALIBRATION)
+  const loaded = await loadHistory(memoryStore({ 'eta.version': 1, 'eta.log': twice(50) }).store, '/repo')
+  expect(loaded.calibration.turns).toBe(50)
+  expect(near(loaded.calibration.bias)).toBe(near(2 ** (5 / 6)))
+})
+
+test("a write's history counts the row it wrote; a write with no row keeps the stored log's calibration", async () => {
+  const { store } = memoryStore({ 'eta.log': twice(4) })
+  const withRow = await flushHistory(store, '/repo', { sizes: {}, commands: {} }, 1, twice(1)[0]!)
+  expect(withRow?.calibration.turns).toBe(5)
+  expect(near(withRow?.calibration.bias)).toBe(near(2 ** (1 / 3)))
+  const without = await flushHistory(store, '/repo', { sizes: { s: [3] }, commands: {} }, 2, null)
+  expect(without?.calibration.turns).toBe(5)
+})
+
+test('a log row keeps the first estimate as shown and before calibration; a turn from before calibration has no raw one', () => {
+  const raw = { ms: 60_000, lowMs: 40_000, highMs: 90_000 }
+  const first = { atMs: 10_000, ms: 120_000, lowMs: 80_000, highMs: 180_000, source: 'progress' as const, raw }
+  expect(logRowOf(first, 100_000, 7)).toEqual({ at: 7, firstAtMs: 10_000, estimatedMs: 120_000, lowMs: 80_000, highMs: 180_000, tookMs: 100_000, source: 'progress', raw })
+  const { raw: _, ...before } = first
+  expect('raw' in logRowOf(before, 100_000, 7)).toBe(false)
+  expect(appendLog([], logRowOf(first, 100_000, 7))[0]?.raw, 'the store keeps it').toEqual(raw)
+  expect(readLog([row(1), { at: 'nope' }, 'garbage'])).toHaveLength(1)
+  expect(readLog('garbage')).toEqual([])
 })

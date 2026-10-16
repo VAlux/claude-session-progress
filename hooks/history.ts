@@ -1,6 +1,7 @@
 // The countdown's memory across sessions: how long each size of item and each command took, in the mod's own store.
 
-import type { EtaPending, SampleKind } from '../types'
+import type { EtaPending, EtaTurn, SampleKind, Spread } from '../types'
+import { NO_CALIBRATION, calibrationOf, type Calibration } from './calibrate'
 import { SEEDS, type Sizes } from './eta'
 
 const KEY = { version: 'eta.version', sizes: 'eta.sizes', commands: 'eta.commands', log: 'eta.log' } as const
@@ -10,11 +11,11 @@ const VERSION = 1
 export type Bounds = { sizes: number; runs: number; commands: number; projects: number; log: number }
 export const BOUNDS: Bounds = { sizes: 50, runs: 10, commands: 100, projects: 50, log: 200 }
 
-/** One turn's first estimate against what followed. */
-export type LogRow = { at: number; firstAtMs: number; estimatedMs: number; lowMs: number; highMs: number; tookMs: number; source: 'progress' | 'tasks' | 'plan' }
+/** One turn's first estimate against what followed; `raw` is that estimate before calibration, absent on rows from before it. */
+export type LogRow = { at: number; firstAtMs: number; estimatedMs: number; lowMs: number; highMs: number; tookMs: number; source: 'progress' | 'tasks' | 'plan'; raw?: Spread }
 
-/** What the estimator reads: every kind's samples, and this project's command runs. */
-export type History = { sizes: Sizes; commands: Record<string, number[]> }
+/** What the estimator reads: every kind's samples, this project's command runs, and the correction past turns call for. */
+export type History = { sizes: Sizes; commands: Record<string, number[]>; calibration: Calibration }
 
 /** The part of `$.store` the history uses. */
 export type Store = { get: (key: string) => Promise<unknown>; set: (key: string, value: unknown) => Promise<void> }
@@ -27,7 +28,7 @@ const isTimes = (v: unknown): v is number[] => Array.isArray(v) && v.length > 0 
 const asRecord = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
 
 /** The history before anything is learned. */
-export const seeded = (): History => ({ sizes: readSizes(undefined), commands: {} })
+export const seeded = (): History => ({ sizes: readSizes(undefined), commands: {}, calibration: NO_CALIBRATION })
 
 /** Every kind's stored samples; a kind missing or unreadable takes its seeds. */
 export function readSizes(stored: unknown): Sizes {
@@ -89,9 +90,28 @@ const isRow = (v: unknown): v is LogRow => {
   return ['at', 'firstAtMs', 'estimatedMs', 'lowMs', 'highMs', 'tookMs'].every(k => typeof r[k] === 'number') && typeof r.source === 'string'
 }
 
+/** The stored log's rows, without the ones that cannot be read. */
+export function readLog(stored: unknown): LogRow[] {
+  return Array.isArray(stored) ? stored.filter(isRow) : []
+}
+
 /** The stored log with one row added, keeping the last `max`. */
 export function appendLog(stored: unknown, row: LogRow, max = BOUNDS.log): LogRow[] {
-  return [...(Array.isArray(stored) ? stored.filter(isRow) : []), row].slice(-max)
+  return [...readLog(stored), row].slice(-max)
+}
+
+/** A turn's log row: its first estimate, as shown and before calibration, against the time it took from there. */
+export function logRowOf(first: NonNullable<EtaTurn['first']>, tookMs: number, at: number): LogRow {
+  return {
+    at,
+    firstAtMs: first.atMs,
+    estimatedMs: first.ms,
+    lowMs: first.lowMs,
+    highMs: first.highMs,
+    tookMs,
+    source: first.source,
+    ...(first.raw === undefined ? {} : { raw: first.raw }),
+  }
 }
 
 /** Whether a stored version is this one's, or none yet. */
@@ -101,7 +121,11 @@ const isCurrent = (version: unknown) => version === undefined || version === VER
 export async function loadHistory(store: Store, project: string): Promise<History> {
   try {
     if (!isCurrent(await store.get(KEY.version))) return seeded()
-    return { sizes: readSizes(await store.get(KEY.sizes)), commands: readCommands(await store.get(KEY.commands), project) }
+    return {
+      sizes: readSizes(await store.get(KEY.sizes)),
+      commands: readCommands(await store.get(KEY.commands), project),
+      calibration: calibrationOf(readLog(await store.get(KEY.log))),
+    }
   } catch {
     return seeded()
   }
@@ -117,7 +141,7 @@ const halved = (b: Bounds): Bounds => ({
 
 /**
  * Writes a turn's samples and its log row, each pass merging from one read of the keys, so a retry never counts a sample twice.
- * A failed write prunes to half the bounds and tries once more. Resolves the project's history as written, or null when nothing was.
+ * A failed write prunes to half the bounds and tries once more. Resolves the project's history as written, its calibration included, or null when nothing was.
  */
 export async function flushHistory(store: Store, project: string, pending: EtaPending, now: number, row: LogRow | null): Promise<History | null> {
   const hasSizes = Object.values(pending.sizes).some(list => (list?.length ?? 0) > 0)
@@ -138,11 +162,12 @@ export async function flushHistory(store: Store, project: string, pending: EtaPe
     try {
       const sizes = mergeSizes(stored.sizes, pending.sizes, bounds.sizes)
       const commands = mergeCommands(stored.commands, project, pending.commands, now, bounds)
+      const log = row === null ? readLog(stored.log) : appendLog(stored.log, row, bounds.log)
       await store.set(KEY.version, VERSION)
       await store.set(KEY.sizes, sizes)
       await store.set(KEY.commands, commands)
-      if (row !== null) await store.set(KEY.log, appendLog(stored.log, row, bounds.log))
-      return { sizes, commands: readCommands(commands, project) }
+      if (row !== null) await store.set(KEY.log, log)
+      return { sizes, commands: readCommands(commands, project), calibration: calibrationOf(log) }
     } catch {
       // Over the store's 4 MiB, say: the second pass keeps half as much.
     }
