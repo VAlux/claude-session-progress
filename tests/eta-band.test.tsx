@@ -53,10 +53,10 @@ async function round($: Engine, index: number, loop: { turnId?: string; agentId?
   }
 }
 
-/** A turn with two rounds 10 s apart, so its pace is 10 s; the clock stands 10 s into the turn. */
-async function pacedTurn($: Engine, on: On) {
+/** A turn with two rounds 10 s apart, so its pace is 10 s; the clock stands 10 s into the turn. The store holds `entries` at the start. */
+async function pacedTurn($: Engine, on: On, entries?: Record<string, unknown>) {
   const { release } = engineBottom(on)
-  mock.store(on)
+  mock.store(on, entries)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.turn.start({ text: 'build it', turnId: 't1' })
   await round($, 0)
@@ -532,6 +532,44 @@ test('the summary compares the turn\'s time as first estimated with the time it 
   await $.turn.complete(done('t1', 75_000))
   await clock.advance(2_000)
   expect(has(await seen($, 'terminal', false), /^⏱ estimated ~1m 30s · took 1m 15s$/)).toBe(true)
+})
+
+/** `n` past turns first estimated at 1m (40 s–1m 30s), before calibration existed, that each took 2m. */
+const logged = (n: number, row: Record<string, unknown> = {}) =>
+  Array.from({ length: n }, (_, i) => ({ at: i, firstAtMs: 10_000, estimatedMs: 60_000, lowMs: 40_000, highMs: 90_000, tookMs: 120_000, source: 'progress', ...row }))
+
+test('past turns that took twice their first estimate scale the countdown up', async ($, on) => {
+  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': logged(50) })
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(1_000)
+  // 79 s raw, times 2^(5/6): about 2m 21s, which reads in whole minutes.
+  expect(has(await seen($, 'terminal'), /~2m left/)).toBe(true)
+})
+
+test('fewer than 5 past turns on record leave the countdown as it was', async ($, on) => {
+  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': logged(4) })
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /~1m 20s left/)).toBe(true)
+})
+
+test('the calibration measures each past estimate before calibration, so a correction that worked is kept, not undone', async ($, on) => {
+  // Shown at 2m and right, but 1m before calibration: turns still take twice the raw estimate.
+  const right = logged(50, { estimatedMs: 120_000, lowMs: 80_000, highMs: 180_000, raw: { ms: 60_000, lowMs: 40_000, highMs: 90_000 } })
+  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': right })
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /~2m left/)).toBe(true)
+})
+
+test("the summary's estimate is the calibrated one the band showed", async ($, on) => {
+  const { clock } = await pacedTurn($, on, { 'eta.version': 1, 'eta.log': logged(50) })
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(60_000)
+  await $.turn.complete(done('t1', 75_000))
+  await clock.advance(2_000)
+  // 80 s raw at the first look, times 2^(5/6), from 10 s in: about 2m 33s, read as ~3m.
+  expect(has(await seen($, 'terminal', false), /^⏱ estimated ~3m/)).toBe(true)
 })
 
 test('an interrupted turn has no accuracy line', async ($, on) => {

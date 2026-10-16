@@ -308,6 +308,15 @@ test("a Bash call's time joins its command's runs, the last 10 kept", () => {
   expect(learnCommand(freshEta(0), key, 0).pending.commands).toEqual({})
 })
 
+test('the first estimate keeps what it said before calibration, when the look carries it', () => {
+  const shown = { ms: 160_000, lowMs: 80_000, highMs: 320_000 }
+  const raw = { ms: 80_000, lowMs: 40_000, highMs: 160_000 }
+  const one = tickEta(freshEta(NOW), { estimate: shown, raw, items: [], source: 'progress' }, NOW + 10_000)
+  expect(one.first).toEqual({ atMs: 10_000, ...shown, source: 'progress', raw })
+  expect(one.last, 'the bar and label follow the calibrated one').toEqual(shown)
+  expect('raw' in (tickEta(freshEta(NOW), { estimate: shown, items: [], source: 'progress' }, NOW + 10_000).first ?? {})).toBe(false)
+})
+
 test('each look keeps the estimate, notes the first, moves the bar on, and marks a growing one', () => {
   const out = (ms: number | null) => ({ estimate: ms === null ? null : { ms, lowMs: ms / 2, highMs: ms * 2 }, items: [], source: 'progress' as const })
   const one = tickEta(freshEta(NOW), out(80_000), NOW + 10_000)

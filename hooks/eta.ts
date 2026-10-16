@@ -186,8 +186,8 @@ export type EtaInput = {
   roundsSinceReport: number
 }
 
-/** A loop's estimate, each item's own (the time left on the one in progress, the others' medians), and what it rests on. */
-export type EtaOutput = { estimate: Spread | null; items: { key: string; ms: number }[]; source: EtaSource | null }
+/** A loop's estimate, each item's own (the time left on the one in progress, the others' medians), what it rests on, and the estimate before calibration. */
+export type EtaOutput = { estimate: Spread | null; items: { key: string; ms: number }[]; source: EtaSource | null; raw?: Spread | null }
 
 const NONE: EtaOutput = { estimate: null, items: [], source: null }
 
@@ -321,7 +321,10 @@ export function tickEta(eta: EtaTurn, out: EtaOutput, now: number): EtaTurn {
   const last = out.estimate
   const elapsed = now - eta.startedAt
   const first =
-    eta.first ?? (last === null || out.source === null ? null : { atMs: Math.max(0, elapsed), ms: last.ms, lowMs: last.lowMs, highMs: last.highMs, source: out.source })
+    eta.first ??
+    (last === null || out.source === null
+      ? null
+      : { atMs: Math.max(0, elapsed), ms: last.ms, lowMs: last.lowMs, highMs: last.highMs, source: out.source, ...(out.raw ? { raw: out.raw } : {}) })
   const fill = last === null ? eta.fill : eta.fill === null ? startFill(elapsed, last.ms) : advanceFill(eta.fill, now - eta.lastTickAt, last.ms)
   const shown = last === null ? null : shownMs(last.ms)
   const grew = shown !== null && eta.shownMs !== null && shown > eta.shownMs

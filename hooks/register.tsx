@@ -69,7 +69,8 @@ import {
   type EtaInput,
   type TaskKind,
 } from './eta'
-import { flushHistory, loadHistory, seeded, type History, type LogRow, type Store } from './history'
+import { calibrated } from './calibrate'
+import { flushHistory, loadHistory, logRowOf, seeded, type History, type LogRow, type Store } from './history'
 import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, nudgeLine, parseReport, staleLine, workTasks } from './report'
 import { shellWrites } from './shell'
 
@@ -402,7 +403,7 @@ async function flush($: Dollar, pending: EtaPending, isAborted: boolean, row: Lo
   await flushing
 }
 
-/** One loop's countdown worked out again: its finished tasks learned, its estimate made, its bar moved on. */
+/** One loop's countdown worked out again: its finished tasks learned, its estimate made and calibrated, its bar moved on. */
 function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], rounds: number, now: number, waitedOn: readonly (Spread | null)[] | null): EtaTurn {
   const pace = paceOf(detail, eta.runs)
   const learned = tasks === null ? eta : learnTasks(eta, tasks.list, tasks.kind, now, pace, history.sizes)
@@ -418,7 +419,11 @@ function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], round
     c: correction(learned.actual, learned.estimated),
     roundsSinceReport: rounds - learned.lastReportRound,
   })
-  return tickEta(learned, waitedOn === null ? own : { ...own, estimate: combine(own.estimate, waitedOn) }, now)
+  // Past turns' correction goes on the whole estimate, not on its items: it stands mostly for work the first list did not name.
+  const raw = own.estimate
+  const shown = raw === null || pace === null ? raw : calibrated(raw, history.calibration, learned.estimated, pace)
+  const out = waitedOn === null ? { ...own, estimate: shown, raw } : { ...own, estimate: combine(shown, waitedOn), raw: combine(raw, waitedOn) }
+  return tickEta(learned, out, now)
 }
 
 /** Every loop's countdown, again: the subagents' first, since a main turn waiting on them shows the longest of theirs. */
@@ -1002,10 +1007,7 @@ export const register: Register = (on, options) => {
       }
     }
     if (eta !== null) {
-      const row: LogRow | null =
-        first === null || verdict === null
-          ? null
-          : { at: await $.clock.now(), firstAtMs: verdict.atMs, estimatedMs: verdict.estimatedMs, lowMs: verdict.lowMs, highMs: verdict.highMs, tookMs: verdict.tookMs, source: first.source }
+      const row = first === null || verdict === null ? null : logRowOf(first, verdict.tookMs, await $.clock.now())
       // An item still listed when Claude answered was in progress until the closing round: learned with the rest.
       const ended = l !== null && e.reason === 'answer' && waiting === 0 ? learnOpenTop(eta, closingAt(detailOf(l)), paceOf(detailOf(l), eta.runs), history.sizes) : eta
       await flush($, ended.pending, e.reason === 'aborted', row)
