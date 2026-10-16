@@ -12,6 +12,42 @@
 
 </div>
 
+## At a glance
+
+### While Claude works
+
+Ask Claude for something that takes a while, say *"Implement plan.md step by step"*, and after a few seconds a band appears above the prompt:
+
+<img src="docs/band-live.png" alt="The live band: the step in progress, a bar with ~20s left, counts of tool calls, files, reads, steps and tokens with their cost, and the plan's steps ticked off below" width="900">
+
+Read it top to bottom:
+
+- **`Exit with status 1 and a clear message when the file is missing`**: the step Claude is on now, taken from `plan.md`.
+- **`plan.md · 2/6 steps · 12s`**: where the steps come from, how many are done, and how long the turn has run.
+- **The bar and `~20s left`**: how much of the work is behind it, and the countdown for the rest.
+- **`⚒ 4 tool calls  ✎ 2 files +32 −2  ⌕ 1 read  ↻ 2 steps  ⇅ 64k↑ 746↓ · $0.09`**: what the turn has done so far: tool calls, files changed with lines added and removed, files read, model requests, and tokens in and out with what they cost. Click any of them to see the list behind it.
+- **`↳ editing plan.md`**: what is running right now.
+- **The steps**: ✓ done, ◐ in progress, ○ still to do.
+
+### When it finishes
+
+<img src="docs/band-summary.png" alt="The summary: Task complete with a full green bar, the counts, the files changed with their line counts opened, tokens and cost, the tools used, and the first estimate against how long the turn took" width="900">
+
+The bar fills and turns green, and the band becomes a summary: `✓ Task complete`, 12 tool calls, 4 files changed (opened here, so each file shows its own `+30 −0`), 6 of 6 steps done, one failed call to look into, 277k tokens in (87% of them from the cache) and 3.4k out for **$0.17**, the model, the tools it used most, and a last line comparing the first estimate with how long the turn took. It goes away when you send your next prompt.
+
+### How the countdown is worked out
+
+The countdown doesn't guess from the clock. It counts the work Claude has said is left and prices each piece by what similar pieces took before:
+
+1. **What is left.** Claude reports its remaining items through the mod's `progress` tool, each sized small, medium or large (`s`, `m`, `l`). A task list or a `- [ ]` plan file counts too.
+2. **How many rounds each needs.** A round is one model request plus the tools it ran. The mod remembers how many rounds items of each size took in your past turns: say a medium item took 4 rounds and a small one 1½.
+3. **How fast rounds go right now.** If this turn's rounds take about 15 s each, then two medium items and one small one are (4 + 4 + 1½) × 15 s ≈ **2m 20s**.
+4. **Commands it has timed.** An item that is just running a command, like `npm test`, uses how long that command took the last times it ran in this project.
+5. **How your past turns compared.** Once 5 turns are on record, if they tend to take 1.3× their first estimate, because work turned up that the first list didn't name, the time left is scaled to match: **~3m left (2–4m)**.
+6. **As items finish**, how they compared with their own estimates corrects the rest, and the range narrows.
+
+Nothing is sent anywhere: what it learns stays in a small file under your Claude Code configuration folder. The details are in [How long is left](#how-long-is-left).
+
 ## Install
 
 At the prompt of a Claude Code terminal session:
@@ -138,7 +174,7 @@ claude plugin test ./claude-session-progress
 | [`types/index.d.ts`](types/index.d.ts) | The mod's state contract |
 | [`tests/`](tests) | Behaviour tests, run with `claude plugin test` |
 
-The demo in [`docs/`](docs) was recorded with [VHS](https://github.com/charmbracelet/vhs) from [`docs/demo.tape`](docs/demo.tape).
+The demo in [`docs/`](docs) was recorded with [VHS](https://github.com/charmbracelet/vhs) from [`docs/demo.tape`](docs/demo.tape). The two screenshots under [At a glance](#at-a-glance) are frames cut from it.
 
 ## License
 
