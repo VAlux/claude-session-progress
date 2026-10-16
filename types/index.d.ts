@@ -58,6 +58,8 @@ export type EtaTurn = {
   pending: EtaPending
   /** Whether a call already reminded Claude to report this turn. Absent on a turn kept from before it existed. */
   nudged?: boolean
+  /** The `lastReportRound` of the report a call last reminded Claude may be out of date. Absent on a turn kept from before it existed. */
+  remindedRound?: number
 }
 
 /** One tool call as a band's details list it; `agentId` marks a subagent's. */

@@ -68,7 +68,7 @@ import {
   type TaskKind,
 } from './eta'
 import { flushHistory, loadHistory, seeded, type History, type LogRow, type Store } from './history'
-import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, nudgeLine, parseReport, workTasks } from './report'
+import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, nudgeLine, parseReport, staleLine, workTasks } from './report'
 import { shellWrites } from './shell'
 
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
@@ -107,6 +107,8 @@ const SHOW_WITH_PLAN_AFTER_MS = 8_000
 const SHOW_ALWAYS_AFTER_MS = 45_000
 // When a turn with nothing to count down reminds Claude, once, to report what is left.
 const NUDGE_AFTER_TOOLS = 5
+// Rounds a report may stand unchanged, items still listed, before Claude is reminded, once a report, that it may be out of date.
+const REMIND_AFTER_ROUNDS = 8
 
 const FRAME_MS = 70
 const FINISH_MS = 1_400
@@ -464,12 +466,15 @@ async function takeReport($: Dollar, agentId: string | undefined, input: Record<
 }
 
 /**
- * The reminder to report, the first time a turn reaches `NUDGE_AFTER_TOOLS` calls with no report, task list or plan.
- * Marked in the same update that reads it, so calls that end together remind once.
+ * The reminder to report, the first time a turn reaches `NUDGE_AFTER_TOOLS` calls with no report, task list or plan;
+ * or that a report may be out of date (`staleOf`). Marked in the same update that reads it, so calls that end together remind once.
  */
 async function nudgeOf($: Dollar): Promise<string | null> {
   if (!config.eta) return null
-  const calls = (await read($, live))?.toolCalls ?? 0
+  const l = await read($, live)
+  const stale = await staleOf($, l?.steps ?? 0)
+  if (stale !== null) return stale
+  const calls = l?.toolCalls ?? 0
   if (calls < NUDGE_AFTER_TOOLS) return null
   if ((await readSteps($)).list.length > 0) return null
   let isDue = false
@@ -479,6 +484,23 @@ async function nudgeOf($: Dollar): Promise<string | null> {
     return { ...eta, nudged: true }
   })
   return isDue ? nudgeLine(calls) : null
+}
+
+/**
+ * The reminder that a report may be out of date: `REMIND_AFTER_ROUNDS` rounds after it, with items still listed, once a report.
+ * Claude often works through the items and forgets to say so, and the band then shows the first one in progress throughout.
+ */
+async function staleOf($: Dollar, rounds: number): Promise<string | null> {
+  let line: string | null = null
+  await update($, etaTurn, eta => {
+    const top = eta?.work?.items[0]
+    if (eta === null || eta.work === null || top === undefined) return eta
+    const since = rounds - eta.lastReportRound
+    if (since < REMIND_AFTER_ROUNDS || eta.remindedRound === eta.lastReportRound) return eta
+    line = staleLine(since, top.do, eta.work.items.length - 1)
+    return { ...eta, remindedRound: eta.lastReportRound }
+  })
+  return line
 }
 
 /** A change to a task list or plan file is a report too, for the stale rule. */

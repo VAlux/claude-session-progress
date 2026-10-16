@@ -64,6 +64,16 @@ export function nudgeLine(calls: number): string {
   )
 }
 
+/** The reminder a call carries once a report has stood unchanged for some rounds with items still listed. */
+export function staleLine(rounds: number, top: string, after: number): string {
+  const rest = after === 0 ? '' : after === 1 ? ', with 1 more item after it' : `, with ${after} more items after it`
+  return (
+    `Your last ${PROGRESS_TOOL} report was ${rounds} rounds ago, and the progress display still shows "${top}" in progress${rest}. ` +
+    'If it or later items are finished, send {done: 1} (or how many finished), or `left` with what is left now, in your next response alongside your other tool calls. ' +
+    'If it is still in progress, ignore this.'
+  )
+}
+
 /** One report: the whole list left, or how many items at its top are finished. */
 export type Report = { left: WorkItem[] } | { done: number }
 
