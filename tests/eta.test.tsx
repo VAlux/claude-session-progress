@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   SEEDS,
   advanceFill,
+  closingAt,
   combine,
   commandBasis,
   commandKey,
@@ -12,6 +13,7 @@ import {
   isUsable,
   learnCommand,
   learnItem,
+  learnOpenTop,
   learnTasks,
   normalizeCommand,
   paceOf,
@@ -28,7 +30,7 @@ import {
   type EtaInput,
 } from '../hooks/eta'
 import { capitalize, countdownLabel, etaLabels, etaRange, etaValue, fitLabel, isGrowing, shownMs } from '../hooks/frames'
-import type { CallRecord, Detail, StepRecord, Task } from '../types'
+import type { CallRecord, Detail, StepRecord, Task, WorkItem } from '../types'
 
 const PACE = 10_000
 const round = (s: { ms: number; lowMs: number; highMs: number }) => ({ ms: Math.round(s.ms), lowMs: Math.round(s.lowMs), highMs: Math.round(s.highMs) })
@@ -321,4 +323,23 @@ test('each look keeps the estimate, notes the first, moves the bar on, and marks
   const lost = tickEta(grown, out(null), NOW + 13_000)
   expect(lost.last).toBeNull()
   expect(lost.fill, 'with no estimate the bar holds').toBe(grown.fill)
+})
+
+test('at the answer, the one item still listed is learned up to the closing round; with two left, a run item or no closing round, nothing is', () => {
+  const listed = (items: WorkItem[]) => ({ ...freshEta(0), work: { items, finished: [], topSince: 10_000 } })
+  expect(learnOpenTop(listed([{ do: 'a', size: 's' }]), 40_000, 10_000, SEEDS).pending.sizes.s).toEqual([3])
+  expect(learnOpenTop(listed([{ do: 'a', size: 's' }, { do: 'b', size: 's' }]), 40_000, 10_000, SEEDS).pending.sizes).toEqual({})
+  expect(learnOpenTop(listed([{ do: 'test', run: 'npm test' }]), 40_000, 10_000, SEEDS).pending.sizes).toEqual({})
+  expect(learnOpenTop(listed([{ do: 'a', size: 's' }]), null, 10_000, SEEDS).pending.sizes).toEqual({})
+  expect(learnOpenTop(listed([{ do: 'a', size: 's' }]), 10_000, 10_000, SEEDS).pending.sizes, 'a closing round no later than the item').toEqual({})
+  expect(learnOpenTop(listed([]), 40_000, 10_000, SEEDS).pending.sizes).toEqual({})
+  expect(learnOpenTop(freshEta(0), 40_000, 10_000, SEEDS).pending.sizes).toEqual({})
+})
+
+test("the closing round began at the last request's start", () => {
+  const step = (startedAt?: number): StepRecord => ({ index: 0, ...(startedAt === undefined ? {} : { startedAt }), durationMs: 1, tools: [], tokensIn: 0, tokensOut: 0, stopReason: null })
+  const detail = (stepLog: StepRecord[]): Detail => ({ calls: [], files: [], reads: [], stepLog, agentIds: [] })
+  expect(closingAt(detail([step(1_000), step(5_000)]))).toBe(5_000)
+  expect(closingAt(detail([]))).toBeNull()
+  expect(closingAt(detail([step()]))).toBeNull()
 })

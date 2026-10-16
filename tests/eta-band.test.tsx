@@ -187,6 +187,60 @@ test('a sized item that finishes is learned, and the next session reads it back 
   expect(has(await seen($, 'terminal'), /~1m left/)).toBe(true)
 })
 
+/** Rounds 10 s apart from `from` to `to`, the clock moving with them: Claude at work without reporting. */
+async function rounds($: Engine, clock: Clock, from: number, to: number, loop: { turnId?: string; agentId?: string } = {}) {
+  for (let i = from; i <= to; i++) {
+    await clock.advance(10_000)
+    await round($, i, loop)
+  }
+}
+
+test('the one item still listed when Claude answers is learned, from when it came on top to the closing round', async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [{ do: 'a', size: 's' }] })
+  await rounds($, clock, 2, 21) // the closing round starts 200 s, 20 rounds, after the report
+  await $.turn.complete(done('t1', 210_000))
+  await restart($)
+  await pacedNext($, clock, 't2')
+  await report($, { left: [{ do: 'b', size: 's' }, { do: 'c', size: 's' }] })
+  await clock.advance(1_000)
+  // As when it is reported done: the learned 20 rounds lift the median of an `s` to 2.5.
+  expect(has(await seen($, 'terminal'), /~1m left/)).toBe(true)
+})
+
+test('an item reported done before the answer is learned once, not again at the answer', async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [{ do: 'a', size: 's' }, { do: 'b', size: 's' }] })
+  await rounds($, clock, 2, 21)
+  await report($, { done: 1 }) // `a` took 20 rounds; `b` comes on top now
+  await rounds($, clock, 22, 22) // and the closing round starts 1 round later
+  await $.turn.complete(done('t1', 220_000))
+  await restart($)
+  await pacedNext($, clock, 't2')
+  await report($, { left: [{ do: 'c', size: 's' }, { do: 'd', size: 's' }] })
+  await clock.advance(1_000)
+  // Seeds with 20 and 1 added: [1, 1, 1.5, 2, 3, 4, 20], median 2. Learned twice, `a` would make it 2.5 (~1m).
+  expect(has(await seen($, 'terminal'), /~50s left/)).toBe(true)
+})
+
+for (const [name, ended, left] of [
+  ['with two items still listed, neither is learned', done, [{ do: 'a', size: 's' }, { do: 'b', size: 's' }]],
+  ['an interrupted turn learns no open item', aborted, [{ do: 'a', size: 's' }]],
+] as const) {
+  test(`at the end of a turn: ${name}`, async ($, on) => {
+    const { clock } = await pacedTurn($, on)
+    await report($, { left: [...left] })
+    await rounds($, clock, 2, 21)
+    await $.turn.complete(ended('t1', 210_000))
+    await restart($)
+    await pacedNext($, clock, 't2')
+    await report($, { left: [{ do: 'c', size: 's' }, { do: 'd', size: 's' }] })
+    await clock.advance(1_000)
+    // The seeds alone: 20 s, 20 s and a round, less the second spent.
+    expect(has(await seen($, 'terminal'), /~50s left/)).toBe(true)
+  })
+}
+
 test("a foreground command's time is learned for this project; a background one's is not", async ($, on) => {
   const { clock, release } = await pacedTurn($, on)
   await slowBash($, clock, release, 'slow 30', 30_000)
@@ -406,6 +460,19 @@ async function withSubagent($: Engine, on: On) {
   await round($, 1, { agentId: 'a1' })
   return clock
 }
+
+test("a subagent's one item still listed when it answers is learned too", async ($, on) => {
+  const clock = await withSubagent($, on)
+  await report($, { left: [{ do: 'a', size: 's' }] }, 'a1')
+  await rounds($, clock, 2, 21, { agentId: 'a1' })
+  await $.turn.complete({ ...done('a1-turn', 210_000), agentId: 'a1' } as never)
+  await $.turn.complete(done('t1', 220_000))
+  await restart($)
+  await pacedNext($, clock, 't2')
+  await report($, { left: [{ do: 'b', size: 's' }, { do: 'c', size: 's' }] })
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal'), /~1m left/)).toBe(true)
+})
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a subagent's band counts down its own report and lists its items`, async ($, on) => {

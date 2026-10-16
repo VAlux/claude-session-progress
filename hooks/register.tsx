@@ -52,6 +52,7 @@ import {
   type Palette,
 } from './frames'
 import {
+  closingAt,
   combine,
   commandKey,
   correction,
@@ -60,6 +61,7 @@ import {
   freshEta,
   learnCommand,
   learnItem,
+  learnOpenTop,
   learnTasks,
   paceOf,
   runningSince,
@@ -917,7 +919,12 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) {
       const now = await $.clock.now()
-      const ended = (await read($, agents)).find(run => run.id === e.agentId)?.eta
+      const endedRun = (await read($, agents)).find(run => run.id === e.agentId)
+      // An item still listed when the subagent answered was in progress until its closing round: learned with the rest.
+      const ended =
+        endedRun?.eta === undefined || e.reason !== 'answer'
+          ? endedRun?.eta
+          : learnOpenTop(endedRun.eta, closingAt(detailOf(endedRun)), paceOf(detailOf(endedRun), endedRun.eta.runs), history.sizes)
       await updateAgent($, e.agentId, now, run => ({
         ...run,
         finishedAt: now,
@@ -999,7 +1006,9 @@ export const register: Register = (on, options) => {
         first === null || verdict === null
           ? null
           : { at: await $.clock.now(), firstAtMs: verdict.atMs, estimatedMs: verdict.estimatedMs, lowMs: verdict.lowMs, highMs: verdict.highMs, tookMs: verdict.tookMs, source: first.source }
-      await flush($, eta.pending, e.reason === 'aborted', row)
+      // An item still listed when Claude answered was in progress until the closing round: learned with the rest.
+      const ended = l !== null && e.reason === 'answer' && waiting === 0 ? learnOpenTop(eta, closingAt(detailOf(l)), paceOf(detailOf(l), eta.runs), history.sizes) : eta
+      await flush($, ended.pending, e.reason === 'aborted', row)
       // Waiting on subagents, the countdown goes on with theirs; otherwise it is done with.
       await update($, etaTurn, x => (x === null || waiting === 0 ? null : { ...x, pending: emptyPending() }))
     }

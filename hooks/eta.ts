@@ -277,6 +277,19 @@ export function learnItem(eta: EtaTurn, finished: { item: WorkItem; since: numbe
   return withFinished(eta, finished.item.size ?? 'm', (now - finished.since) / pace, sizes)
 }
 
+/** When a loop's closing round began: its last request's start; null before any request, or one with no start. */
+export const closingAt = (detail: Detail): number | null => detail.stepLog[detail.stepLog.length - 1]?.startedAt ?? null
+
+/**
+ * At a loop's answer, the one item still listed: Claude was on it until the closing round began, so it is learned like one reported done.
+ * With more than one still listed there is no telling which took the time; a `run` item is learned from its Bash call.
+ */
+export function learnOpenTop(eta: EtaTurn, closing: number | null, pace: number | null, sizes: Sizes): EtaTurn {
+  const work = eta.work
+  if (work === null || work.items.length !== 1 || closing === null || !(closing > work.topSince)) return eta
+  return learnItem(eta, { item: work.items[0]!, since: work.topSince }, closing, pace, sizes)
+}
+
 /** Notes when each task came into progress, and learns the ones that finished since, each once. */
 export function learnTasks(eta: EtaTurn, list: readonly Task[], kind: TaskKind, now: number, pace: number | null, sizes: Sizes): EtaTurn {
   let out = eta
