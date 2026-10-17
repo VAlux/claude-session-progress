@@ -35,6 +35,16 @@
         "on",
         "off"
       ]
+    },
+    "spinner": {
+      "type": "string",
+      "title": "Spinner",
+      "description": "Whether Claude Code's own spinner line shows while the band does. auto: hidden while the band shows, since the band has its clock and tokens, and shown when it names a state or the band is not up. keep: always shown.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "keep"
+      ]
     }
   },
   "types": "./types/index.d.ts"

@@ -673,6 +673,7 @@ export function showsStepRows(setting: StepRows, fromPlanFile: boolean): boolean
 export const register: Register = (on, options) => {
   const stepRows: StepRows = options.stepRows === 'always' || options.stepRows === 'never' ? options.stepRows : 'auto'
   config.eta = options.eta !== 'off'
+  const keepsSpinner = options.spinner === 'keep'
   // A fresh activation reads the history again, at the session's start or its first turn.
   project = null
   history = seeded()
@@ -724,6 +725,16 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (e.props.tool !== PROGRESS_TOOL) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }).catch(($, e, next) => next(e))
+
+  // While the band shows, the engine's spinner says nothing it does not (the clock, the tokens), so it gives way; it stays when it
+  // names a state (`message`), on a surface with no band, and for a subagent, which the hook is not told where it is drawn.
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    if (keepsSpinner || (e.surface !== 'terminal' && e.surface !== 'desktop') || e.props.message !== null) return next(e)
+    if (!(await read($, live))?.isLong) return next(e)
+    if ((await read($, agents)).some(run => run.id === e.requestId)) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box />
   }).catch(($, e, next) => next(e))

@@ -138,6 +138,8 @@ Quick answers and short Q&A never show the band. It appears once a turn has run:
 
 The thresholds are the constants at the top of [`hooks/register.tsx`](hooks/register.tsx).
 
+While the band shows, Claude Code's own spinner line (`Sauteing… (12s, 300 tokens)`) is hidden, since the band's head row has the clock and its stats the tokens. Before the band appears, after the turn, and in VS Code, the spinner is drawn as usual, and it stays whenever it names a state in place of its word. A subagent's spinner is always left alone. Set `spinner` to `keep` to always see it.
+
 ## Settings
 
 Change it in `/config`, or with `claude plugin configure session-progress`.
@@ -146,6 +148,7 @@ Change it in `/config`, or with `claude plugin configure session-progress`.
 | --- | --- | --- |
 | `stepRows` | **`auto`**, `always`, `never` | When the band lists the steps under its bar. `auto` lists a Markdown plan's steps and the items Claude reports, since Claude Code draws its own task list. `always` lists task lists too, and `never` lists nothing. |
 | `eta` | **`on`**, `off` | Whether the band counts down the work left. `off` registers no tool, adds no prompt line, records nothing, and the bar shows the share of a task list or plan done, as before 0.2.0. |
+| `spinner` | **`auto`**, `keep` | Whether Claude Code's spinner line shows while the band does. `auto` hides it then, and only then; `keep` always shows it. |
 
 To make the band your only task view, hide Claude Code's own list with `ctrl+t` and set `stepRows` to `always`.
 
