@@ -12,6 +12,18 @@
 
 </div>
 
+## Install
+
+At the prompt of a Claude Code terminal session:
+
+```
+/plugin install session-progress --marketplace VAlux/claude-session-progress
+```
+
+Answer `y` to add the marketplace, then pick a scope. The user scope loads it in every session. It starts working in the current session right away.
+
+The desktop app's Code tab has no `/plugin` command. Install it from a terminal at the user scope, and the local sessions the desktop app starts load it too.
+
 ## At a glance
 
 ### While Claude works
@@ -46,19 +58,13 @@ The countdown doesn't guess from the clock. It counts the work Claude has said i
 5. **How your past turns compared.** Once 5 turns are on record, if they tend to take 1.3× their first estimate, because work turned up that the first list didn't name, the time left is scaled to match: **~3m left (2–4m)**.
 6. **As items finish**, how they compared with their own estimates corrects the rest, and the range narrows.
 
+Steps 5 and 6 form a loop that runs across turns. When a turn ends, the mod keeps its first estimate (before any correction) beside how long the turn took, and works the correction out again from the last 50 of those pairs:
+
+<img src="docs/calibration-loop.png" alt="The self-calibration loop. During a turn: work left becomes a raw estimate (rounds per size times this turn's pace), which is calibrated (time times bias, range widened) and shown as the countdown. After the turn: the raw first estimate and the time it took go into a log row, the calibration is recomputed from the last 50 rows (5 or more needed), and its bias and widen feed the next turn's calibration." width="900">
+
+The log keeps the estimate from before the correction on purpose. If it kept the corrected one, each row would only record what the last correction missed. The correction would then shrink, and turns would start running long again.
+
 Nothing is sent anywhere: what it learns stays in a small file under your Claude Code configuration folder. The details are in [How long is left](#how-long-is-left).
-
-## Install
-
-At the prompt of a Claude Code terminal session:
-
-```
-/plugin install session-progress --marketplace VAlux/claude-session-progress
-```
-
-Answer `y` to add the marketplace, then pick a scope. The user scope loads it in every session. It starts working in the current session right away.
-
-The desktop app's Code tab has no `/plugin` command. Install it from a terminal at the user scope, and the local sessions the desktop app starts load it too.
 
 ## What it shows
 
@@ -174,7 +180,7 @@ claude plugin test ./claude-session-progress
 | [`types/index.d.ts`](types/index.d.ts) | The mod's state contract |
 | [`tests/`](tests) | Behaviour tests, run with `claude plugin test` |
 
-The demo in [`docs/`](docs) was recorded with [VHS](https://github.com/charmbracelet/vhs) from [`docs/demo.tape`](docs/demo.tape). The two screenshots under [At a glance](#at-a-glance) are frames cut from it.
+The demo in [`docs/`](docs) was recorded with [VHS](https://github.com/charmbracelet/vhs) from [`docs/demo.tape`](docs/demo.tape). The two band screenshots under [At a glance](#at-a-glance) are frames cut from it.
 
 ## License
 
