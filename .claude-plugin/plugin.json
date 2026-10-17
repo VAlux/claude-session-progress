@@ -1,6 +1,6 @@
 {
   "name": "session-progress",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Animated progress band for long-running turns, with a completion summary",
   "author": {
     "name": "Alvo"
