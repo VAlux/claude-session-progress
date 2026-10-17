@@ -15,8 +15,9 @@ const DESCRIPTION =
   'List the items in order, the one you are on first, each in a few words (5 at most). ' +
   'Give each a size: s — a quick change or lookup, about 1–2 tool calls; m — a few files or a few rounds, 3–8; ' +
   'l — a broad change or a debugging loop, 9 or more. When running a command is the item (a test suite, a build), ' +
-  'give `run` with the exact command instead of a size. Send `{done: 1}` as each top item finishes, not the list again; ' +
-  'send `left` only when items are added, dropped or changed. Once the work is done, just answer: the turn ending closes the list. ' +
+  'give `run` with the exact command instead of a size. Send `{done: 1}` with the first tool calls of the next item, one item at a time ' +
+  'and not the list again: a late `done`, or one for several items, loses their times. Send `left` only when items are added, dropped or changed. ' +
+  'Once the last item is done, just answer: the turn ending closes it. ' +
   'Returns `ok`.'
 
 /** The tool as the mod registers it: in the prompt's tool list, not behind ToolSearch, since a report there would cost a round. */

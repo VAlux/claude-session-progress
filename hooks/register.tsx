@@ -110,8 +110,9 @@ const SHOW_WITH_PLAN_AFTER_MS = 8_000
 const SHOW_ALWAYS_AFTER_MS = 45_000
 // When a turn with nothing to count down reminds Claude, once, to report what is left.
 const NUDGE_AFTER_TOOLS = 5
-// Rounds a report may stand unchanged, items still listed, before Claude is reminded, once a report, that it may be out of date.
-const REMIND_AFTER_ROUNDS = 8
+// Rounds a report may stand unchanged, items still listed, before Claude is reminded, once a report, that it may be out of date:
+// by the top item's size, just past the tool calls its description allows. Fixed, since the learned samples run long when `done` comes late.
+const REMIND_AFTER_ROUNDS = { s: 3, m: 6, l: 8 } as const
 
 const FRAME_MS = 70
 const FINISH_MS = 1_400
@@ -500,8 +501,9 @@ async function nudgeOf($: Dollar): Promise<string | null> {
 }
 
 /**
- * The reminder that a report may be out of date: `REMIND_AFTER_ROUNDS` rounds after it, with items still listed, once a report.
- * Claude often works through the items and forgets to say so, and the band then shows the first one in progress throughout.
+ * The reminder that a report may be out of date: `REMIND_AFTER_ROUNDS` rounds after it for the top item's size (an unsized or `run` one as `m`),
+ * with items still listed, once a report. Claude often works through the items and forgets to say so, and the band then shows the first one
+ * in progress throughout; by the time it says so, several have finished, and a `done` for several at once times none of them.
  */
 async function staleOf($: Dollar, rounds: number): Promise<string | null> {
   let line: string | null = null
@@ -509,7 +511,7 @@ async function staleOf($: Dollar, rounds: number): Promise<string | null> {
     const top = eta?.work?.items[0]
     if (eta === null || eta.work === null || top === undefined) return eta
     const since = rounds - eta.lastReportRound
-    if (since < REMIND_AFTER_ROUNDS || eta.remindedRound === eta.lastReportRound) return eta
+    if (since < REMIND_AFTER_ROUNDS[top.size ?? 'm'] || eta.remindedRound === eta.lastReportRound) return eta
     line = staleLine(since, top.do, eta.work.items.length - 1)
     return { ...eta, remindedRound: eta.lastReportRound }
   })

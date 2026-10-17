@@ -38,8 +38,11 @@ test('the mod registers its progress tool at session start, in the tool list rat
   expect(registered).toEqual([{ name: 'progress', isDeferred: false }])
   // Subagents get no system-prompt line, so the tool's own description is what tells every loop when to report.
   expect(descriptions[0]).toContain('never on its own')
-  // A `done` sent alone before the answer costs a whole request; the turn's end closes the list anyway.
-  expect(descriptions[0]).toContain('Once the work is done, just answer')
+  // A `done` sent alone before the answer costs a whole request; the turn's end closes the last item anyway.
+  expect(descriptions[0]).toContain('Once the last item is done, just answer')
+  // Only a `done: 1` sent as the next item starts times an item: one sent late, or for several at once, loses their times.
+  expect(descriptions[0]).toContain('with the first tool calls of the next item')
+  expect(descriptions[0]).toContain('one item at a time')
   // Each report is output, and stays in the context every later request reads: short items, `done` rather than the list again.
   expect(descriptions[0]).toContain('5 at most')
   expect(descriptions[0]).toContain('not the list again')

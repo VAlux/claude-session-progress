@@ -22,10 +22,10 @@ type Ran = { result?: unknown; context?: readonly string[] }
 const bash = async ($: Engine, command = 'ls') => (await $.tool.call({ tool: 'Bash', command })) as Ran
 const report = ($: Engine, input: Record<string, unknown>) => $.tool.call({ tool: PROGRESS_TOOL, ...input } as never)
 /** `n` model rounds of the main loop, each with one Bash call; the reminders each call came back with. */
-async function rounds($: Engine, n: number, from = 0): Promise<(readonly string[] | undefined)[]> {
+async function rounds($: Engine, n: number, from = 0, turnId = 't1'): Promise<(readonly string[] | undefined)[]> {
   const out: (readonly string[] | undefined)[] = []
   for (let i = from; i < from + n; i++) {
-    for await (const _ of $.turn.step({ turnId: 't1', index: i, model: 'claude-opus-5-5', messageCount: 1 } as never)) {
+    for await (const _ of $.turn.step({ turnId, index: i, model: 'claude-opus-5-5', messageCount: 1 } as never)) {
       // drain
     }
     out.push((await bash($, `round ${i}`)).context)
@@ -88,34 +88,49 @@ test("a subagent's calls neither count toward the reminder nor carry it", async 
   expect((await contexts($, 4)).every(c => c === undefined)).toBe(true)
 })
 
-test('a report left unchanged for 8 rounds with items still listed brings one reminder naming the item in progress', async ($, on) => {
+test('a report left unchanged for 6 rounds with an m item on top brings one reminder naming the item in progress', async ($, on) => {
   engineBottom(on)
   await $.turn.start({ text: 'work', turnId: 't1' })
   await report($, { left: [{ do: 'Repair poetry', size: 'm' }, { do: 'Write the probe', size: 'l' }, { do: 'Docs', size: 's' }] })
   const seen = await rounds($, 12)
-  expect(seen.slice(0, 7).every(c => c === undefined)).toBe(true)
-  expect(seen[7]?.length).toBe(1)
-  expect(seen[7]?.[0]).toContain('"Repair poetry"')
-  expect(seen[7]?.[0]).toContain('{done: 1}')
-  expect(seen.slice(8).every(c => c === undefined), 'once a report').toBe(true)
+  expect(seen.slice(0, 5).every(c => c === undefined)).toBe(true)
+  expect(seen[5]?.length).toBe(1)
+  expect(seen[5]?.[0]).toContain('"Repair poetry"')
+  expect(seen[5]?.[0]).toContain('{done: 1}')
+  expect(seen.slice(6).every(c => c === undefined), 'once a report').toBe(true)
+})
+
+test('the top item\'s size sets when the reminder comes: s after 3 rounds, l after 8, an unsized or run item as m', async ($, on) => {
+  engineBottom(on)
+  const firstAt = async (item: Record<string, unknown>, turnId: string) => {
+    await $.turn.start({ text: 'work', turnId })
+    await report($, { left: [item, { do: 'next', size: 's' }] })
+    const seen = await rounds($, 10, 0, turnId)
+    await $.turn.complete({ turnId, durationMs: 30_000, answer: 'ok', isAborted: false, reason: 'answer' } as never)
+    return seen.findIndex(c => c !== undefined) + 1
+  }
+  expect(await firstAt({ do: 'a', size: 's' }, 't1'), 's').toBe(3)
+  expect(await firstAt({ do: 'b', size: 'l' }, 't2'), 'l').toBe(8)
+  expect(await firstAt({ do: 'c' }, 't3'), 'unsized').toBe(6)
+  expect(await firstAt({ do: 'd', run: 'npm test' }, 't4'), 'run').toBe(6)
 })
 
 test('each new report starts the count again, and can be reminded once more', async ($, on) => {
   engineBottom(on)
   await $.turn.start({ text: 'work', turnId: 't1' })
   await report($, { left: [{ do: 'a', size: 'm' }, { do: 'b', size: 'm' }, { do: 'c', size: 'm' }] })
-  expect((await rounds($, 8))[7]?.length).toBe(1)
+  expect((await rounds($, 6))[5]?.length).toBe(1)
   await report($, { done: 1 })
-  const seen = await rounds($, 8, 8)
-  expect(seen.slice(0, 7).every(c => c === undefined)).toBe(true)
-  expect(seen[7]?.[0]).toContain('"b"')
+  const seen = await rounds($, 6, 6)
+  expect(seen.slice(0, 5).every(c => c === undefined)).toBe(true)
+  expect(seen[5]?.[0]).toContain('"b"')
 })
 
 test('a report kept current is never reminded', async ($, on) => {
   engineBottom(on)
   await $.turn.start({ text: 'work', turnId: 't1' })
-  await report($, { left: [{ do: 'a', size: 's' }, { do: 'b', size: 's' }, { do: 'c', size: 's' }, { do: 'd', size: 's' }] })
-  const seen = [...(await rounds($, 5)), ...(await report($, { done: 1 }), await rounds($, 5, 5)), ...(await report($, { done: 1 }), await rounds($, 5, 10))]
+  await report($, { left: [{ do: 'a', size: 's' }, { do: 'b', size: 'm' }, { do: 'c', size: 's' }, { do: 'd', size: 's' }] })
+  const seen = [...(await rounds($, 2)), ...(await report($, { done: 1 }), await rounds($, 5, 2)), ...(await report($, { done: 1 }), await rounds($, 2, 7))]
   expect(seen.every(c => c === undefined)).toBe(true)
 })
 
