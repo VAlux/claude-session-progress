@@ -38,6 +38,11 @@ test('the mod registers its progress tool at session start, in the tool list rat
   expect(registered).toEqual([{ name: 'progress', isDeferred: false }])
   // Subagents get no system-prompt line, so the tool's own description is what tells every loop when to report.
   expect(descriptions[0]).toContain('never on its own')
+  // A `done` sent alone before the answer costs a whole request; the turn's end closes the list anyway.
+  expect(descriptions[0]).toContain('Once the work is done, just answer')
+  // Each report is output, and stays in the context every later request reads: short items, `done` rather than the list again.
+  expect(descriptions[0]).toContain('5 at most')
+  expect(descriptions[0]).toContain('not the list again')
 })
 
 test('eta: off registers no tool', { options: { eta: 'off' } }, async ($, on) => {
@@ -67,8 +72,10 @@ test('the system prompt asks for reports only when the tool is offered', async (
   const offered = await $.prompt.compose({ ...base, tools: ['Bash', PROGRESS_TOOL] })
   const line = offered.sections.find(s => s.id === 'session-progress:eta')
   expect(line?.text).toContain(`report what is left with ${PROGRESS_TOOL}`)
-  expect(line?.text).toContain('never on its own')
   expect(line?.text, 'the first report comes with the first tool calls, not once the work is understood').toContain('first response that calls tools')
+  // How to report is the tool's description, which every request carries already; the line does not repeat it.
+  expect(line?.text).toContain('Its description says how')
+  expect(line?.text).not.toContain('never on its own')
   const without = await $.prompt.compose({ ...base, tools: ['Bash'] })
   expect(without.sections.some(s => s.id === 'session-progress:eta')).toBe(false)
 })

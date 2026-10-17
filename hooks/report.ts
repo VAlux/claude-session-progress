@@ -12,11 +12,12 @@ const DESCRIPTION =
   'Reports the work left in this turn, for the progress display only. Use it during work that will take more than a few steps ' +
   'when you keep no task list: start in your first response that calls tools, with a rough guess if that is all you have, ' +
   'and send it in the same response as your other tool calls, never on its own. ' +
-  'List the items in order, the one you are on first. ' +
+  'List the items in order, the one you are on first, each in a few words (5 at most). ' +
   'Give each a size: s — a quick change or lookup, about 1–2 tool calls; m — a few files or a few rounds, 3–8; ' +
   'l — a broad change or a debugging loop, 9 or more. When running a command is the item (a test suite, a build), ' +
-  'give `run` with the exact command instead of a size. Send `{done: 1}` when you finish the top item; ' +
-  'send `left` again when the list changes. Returns `ok`.'
+  'give `run` with the exact command instead of a size. Send `{done: 1}` as each top item finishes, not the list again; ' +
+  'send `left` only when items are added, dropped or changed. Once the work is done, just answer: the turn ending closes the list. ' +
+  'Returns `ok`.'
 
 /** The tool as the mod registers it: in the prompt's tool list, not behind ToolSearch, since a report there would cost a round. */
 export const PROGRESS_SPEC: ToolSpec = {
@@ -31,28 +32,30 @@ export const PROGRESS_SPEC: ToolSpec = {
         items: {
           type: 'object',
           properties: {
-            do: { type: 'string', description: 'The item, in a few words' },
+            // No descriptions here: the tool's description says what each field is, and they would cost every request.
+            do: { type: 'string' },
             size: { type: 'string', enum: ['s', 'm', 'l'] },
-            run: { type: 'string', description: 'The exact command, when running it is the item' },
+            run: { type: 'string' },
           },
           required: ['do'],
         },
       },
-      done: { type: 'integer', minimum: 1, description: 'How many items at the top of the list are finished' },
+      done: { type: 'integer', minimum: 1 },
     },
   },
   isDeferred: false,
 }
 
-/** The system-prompt line asking Claude to report, when the tool is offered. */
+/**
+ * The system-prompt line asking Claude to report, when the tool is offered. It says only when to start, which Claude skipped
+ * without it; how to report is the tool's description, which every request carries already.
+ */
 export function etaLine(tools: readonly string[]): string | null {
   if (!tools.includes(PROGRESS_TOOL)) return null
   return (
-    `During work that will take more than a few steps and has no task list, report what is left with ${PROGRESS_TOOL}. ` +
-    'Send the first report in your first response that calls tools, before you know the details: a rough guess is fine, and exploring counts as an item. ' +
-    'Keep the item you are on first. ' +
-    'Send {done: 1} when you finish it and send `left` again when the work changes. ' +
-    'Always send it in the same response as your other tool calls, never on its own. It only feeds the progress display.'
+    `During work that will take more than a few steps and has no task list, report what is left with ${PROGRESS_TOOL} ` +
+    'in your first response that calls tools, before you know the details: a rough guess is fine, and exploring counts as an item. ' +
+    'Its description says how.'
   )
 }
 
@@ -70,7 +73,7 @@ export function staleLine(rounds: number, top: string, after: number): string {
   return (
     `Your last ${PROGRESS_TOOL} report was ${rounds} rounds ago, and the progress display still shows "${top}" in progress${rest}. ` +
     'If it or later items are finished, send {done: 1} (or how many finished), or `left` with what is left now, in your next response alongside your other tool calls. ' +
-    'If it is still in progress, ignore this.'
+    'If it is still in progress, or you are about to answer, ignore this.'
   )
 }
 
