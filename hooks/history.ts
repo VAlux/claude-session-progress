@@ -11,7 +11,7 @@ const VERSION = 1
 export type Bounds = { sizes: number; runs: number; commands: number; projects: number; log: number }
 export const BOUNDS: Bounds = { sizes: 50, runs: 10, commands: 100, projects: 50, log: 200 }
 
-/** One turn's first estimate against what followed; `raw` is that estimate before calibration, absent on rows from before it. */
+/** One turn's first estimate against what followed; `raw` is that estimate before calibration, absent on rows from before it. `plan` only on rows from when plan files were read. */
 export type LogRow = { at: number; firstAtMs: number; estimatedMs: number; lowMs: number; highMs: number; tookMs: number; source: 'progress' | 'tasks' | 'plan'; raw?: Spread }
 
 /** What the estimator reads: every kind's samples, this project's command runs, and the correction past turns call for. */
@@ -60,10 +60,12 @@ export function readCommands(stored: unknown, project: string): Record<string, n
   return Object.fromEntries(Object.entries(readAll(stored)[project] ?? {}).map(([command, runs]) => [command, runs.samples]))
 }
 
-/** The stored samples with a turn's added, each kind keeping its last `max`. */
+/** The stored samples with a turn's added, each kind keeping its last `max`. A kind no longer learned (a turn kept from when plan files were read) is dropped. */
 export function mergeSizes(stored: unknown, added: EtaPending['sizes'], max = BOUNDS.sizes): Sizes {
   const out = readSizes(stored)
-  for (const kind of Object.keys(added) as SampleKind[]) out[kind] = [...out[kind], ...(added[kind] ?? []).filter(isTime)].slice(-max)
+  for (const kind of Object.keys(added) as SampleKind[]) {
+    if (out[kind] !== undefined) out[kind] = [...out[kind], ...(added[kind] ?? []).filter(isTime)].slice(-max)
+  }
   return out
 }
 

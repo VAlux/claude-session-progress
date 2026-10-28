@@ -37,9 +37,6 @@ function engineBottom(on: On) {
     if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.startsWith('slow')) await new Promise<void>(resolve => held.push(resolve))
     if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.includes('refused')) return { deny: 'refused' } as never
     if (e.tool === 'Agent') return { result: { agentId: 'a1', agentType: 'general-purpose' } } as never
-    if (e.tool === 'Bash' && typeof e.command === 'string' && e.command.startsWith('task-done')) {
-      return { result: { stdout: 'ledger: Task 1: complete (commits a..b, tests: x → ok)', stderr: '', interrupted: false } } as never
-    }
     return { result: e.tool === 'TodoWrite' ? { oldTodos: [], newTodos: e.todos } : 'ok' } as never
   })
   return { release: () => held.splice(0).forEach(resolve => resolve()) }
@@ -295,14 +292,20 @@ test("a finished run item's long round stays out of the pace", async ($, on) => 
   expect(has(await seen($, 'terminal'), /~30s left/)).toBe(true)
 })
 
-test('a plan file written in the default configuration gets its countdown, and keeps its rows', async ($, on) => {
+// A story's acceptance criteria are `- [ ]` boxes too, and nobody ticks them: they once took over the band for good.
+test("a Markdown checklist Claude writes or reads leaves Claude's report on the band", async ($, on) => {
+  const story = ['# Story', '## Acceptance Criteria', '- [ ] Given the CLI is installed, when a user runs it, then it works', '- [ ] Given a webhook, when it fails, then it says so'].join('\n')
+  on('fs.read', () => ({ value: story }))
   const { clock } = await pacedTurn($, on)
-  const content = '# Plan\n\n- [x] Write the types\n- [ ] Write the hooks\n- [ ] Write the tests\n- [ ] Ship\n'
-  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/plan.md', content })
+  await report($, { left: [MS.m, MS.s] })
+  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/stories/story.md', content: story })
+  await $.tool.call({ tool: 'Read', file_path: '/repo/docs/stories/story.md' })
   await clock.advance(1_000)
   const shown = await seen($, 'terminal')
-  expect(has(shown, /~3m left/)).toBe(true)
-  expect(has(shown, /◐ Write the hooks/), 'a plan file keeps its rows').toBe(true)
+  expect(has(shown, /~1m 20s left/)).toBe(true)
+  expect(has(shown, /◐ fix the parser/)).toBe(true)
+  expect(has(shown, /Given the CLI/)).toBe(false)
+  expect(has(shown, /story\.md ·/)).toBe(false)
 })
 
 /** Seventeen rounds on, 10 s apart, with no report: the one item reported is far past its range, and the countdown is gone. */
@@ -314,25 +317,12 @@ async function goStale($: Engine, clock: Clock) {
   await clock.advance(1_000)
 }
 
-test('reading a file that changes no plan does not count as a report', async ($, on) => {
-  on('fs.read', () => ({ value: '# Readme\n\nNothing here to tick.\n' }))
+test('editing a Markdown checklist does not count as a report', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.s] })
   await goStale($, clock)
   expect(has(await seen($, 'terminal'), /left/), 'stale first').toBe(false)
-  await $.tool.call({ tool: 'Read', file_path: '/repo/README.md' })
-  await clock.advance(1_000)
-  expect(has(await seen($, 'terminal'), /left/)).toBe(false)
-})
-
-test('a ledger line for a task already reported done does not count as a report', async ($, on) => {
-  const plan = ['# Plan', '### Task 1: Write the types', '- [ ] Step', '### Task 2: Write the hooks', '- [ ] Step', '### Task 3: Ship', '- [ ] Step'].join('\n')
-  const { clock } = await pacedTurn($, on)
-  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/plan.md', content: plan })
-  await $.tool.call({ tool: 'Bash', command: 'task-done plan.md 1' })
-  await goStale($, clock)
-  expect(has(await seen($, 'terminal'), /left/), 'stale first').toBe(false)
-  await $.tool.call({ tool: 'Bash', command: 'task-done plan.md 1' })
+  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/plan.md', content: '# Plan\n\n- [x] Write the types\n- [ ] Ship\n' })
   await clock.advance(1_000)
   expect(has(await seen($, 'terminal'), /left/)).toBe(false)
 })

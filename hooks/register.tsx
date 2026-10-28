@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Color, Elements, EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AgentRun, Detail, EtaPending, EtaTurn, Live, PlanFile, PlanTask, Spread, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
+import type { AgentRun, Detail, EtaPending, EtaTurn, Live, Spread, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
 import {
   ICONS,
   changedFiles,
@@ -38,10 +38,6 @@ import {
   pctLabel,
   duration,
   glyphCells,
-  isMarkdown,
-  ledgerPlanName,
-  ledgerTasks,
-  parsePlan,
   plural,
   shortToolName,
   spinnerCells,
@@ -67,7 +63,6 @@ import {
   runningSince,
   tickEta,
   type EtaInput,
-  type TaskKind,
 } from './eta'
 import { calibrated } from './calibrate'
 import { flushHistory, loadHistory, logRowOf, seeded, type History, type LogRow, type Store } from './history'
@@ -77,7 +72,6 @@ import { shellWrites } from './shell'
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
 const summary = atom({ plugin: 'session-progress', key: 'summary' } as const, null)
 const tasks = atom({ plugin: 'session-progress', key: 'tasks' } as const, [])
-const planFile = atom({ plugin: 'session-progress', key: 'planFile' } as const, null)
 const totals = atom({ plugin: 'session-progress', key: 'totals' } as const, {
   turns: 0,
   longTurns: 0,
@@ -129,7 +123,6 @@ const BAR_SLACK = 2
 
 const PLAN_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate'])
 const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
-const PLAN_FILE_TOOLS = new Set(['Read', 'Edit', 'MultiEdit', 'Write'])
 
 /** A subagent's own TodoWrite/TaskCreate list never replaces the main one; its TaskUpdate may tick main tasks. */
 export function tracksPlanTool(tool: string, isSubagent: boolean): boolean {
@@ -302,85 +295,6 @@ function planProgress(list: readonly Task[]): number | null {
   return (done + active * 0.5) / list.length
 }
 
-type Steps = { list: Task[]; progress: number | null; unit: 'tasks' | 'steps'; source: string | null }
-
-export function stepsOf(taskList: readonly Task[], plan: PlanFile | null): Steps {
-  if (taskList.length > 0) return { list: [...taskList], progress: planProgress(taskList), unit: 'tasks', source: null }
-  if (plan === null) return { list: [], progress: null, unit: 'tasks', source: null }
-  const headed = plan.tasks ?? []
-  if (headed.length >= 2) {
-    // A task is done when a ledger reported it or all its boxes are ticked: superpowers' executor only does the first.
-    const completed = new Set(plan.completed ?? [])
-    const isDone = (task: PlanTask) => completed.has(task.n) || (task.steps > 0 && task.stepsDone === task.steps)
-    const firstOpen = headed.findIndex(task => !isDone(task))
-    const list = headed.map((task, i): Task => ({
-      id: `plan-task-${task.n}`,
-      subject: task.text,
-      status: isDone(task) ? 'completed' : i === firstOpen ? 'in_progress' : 'pending',
-    }))
-    return { list, progress: headed.filter(isDone).length / headed.length, unit: 'tasks', source: plan.name }
-  }
-  if (plan.items.length < 2) return { list: [], progress: null, unit: 'tasks', source: null }
-  const firstOpen = plan.items.findIndex(item => !item.done)
-  const list = plan.items.map((item, i): Task => ({
-    id: `plan-${i}`,
-    subject: item.text,
-    status: item.done ? 'completed' : i === firstOpen ? 'in_progress' : 'pending',
-  }))
-  const done = plan.items.filter(item => item.done).length
-  return { list, progress: done / plan.items.length, unit: 'steps', source: plan.name }
-}
-
-async function readSteps($: Dollar): Promise<Steps> {
-  return stepsOf(await read($, tasks), await read($, planFile))
-}
-
-async function trackPlanFile($: Dollar, path: string, written: string | null, isSub: boolean) {
-  let text = written
-  if (text === null) {
-    try {
-      text = await $.fs.read(path)
-    } catch {
-      return
-    }
-  }
-  const { items, tasks: headed } = parsePlan(text)
-  const reported = ledgerTasks(text)
-  const name = path.split('/').pop() || path
-  await update($, planFile, current => {
-    if (items.length < 2) {
-      // A superpowers ledger read on its own ticks the plan it names (or the current one, if it names none).
-      if (reported.length > 0 && current !== null && current.path !== path) {
-        const of = ledgerPlanName(text)
-        if (of === null || of === current.name) return withCompleted(current, reported)
-      }
-      return current?.path === path ? null : current
-    }
-    // A subagent's own checklist (superpowers' task brief, say) never takes over; its edit to the main plan still counts.
-    if (isSub && current?.path !== path) return current
-    // Another file only takes over while it still has open steps (a finished checklist read for reference does not).
-    const isOpen = items.some(item => !item.done)
-    if (current !== null && current.path !== path && !isOpen && current.items.some(item => !item.done)) return current
-    return { path, name, items, tasks: headed, completed: current?.path === path ? (current.completed ?? []) : [] }
-  })
-}
-
-function withCompleted(plan: PlanFile, numbers: readonly number[]): PlanFile {
-  const known = plan.completed ?? []
-  const added = numbers.filter(n => !known.includes(n))
-  return added.length === 0 ? plan : { ...plan, completed: [...known, ...added] }
-}
-
-/** The tasks a Bash call reports complete in its output, as superpowers' task-done prints them. */
-function bashReported(ran: unknown): number[] {
-  const r = ran as { result?: { stdout?: unknown }; text?: unknown }
-  const out = typeof r.result?.stdout === 'string' ? r.result.stdout : typeof r.text === 'string' ? r.text : ''
-  return ledgerTasks(out)
-}
-
-/** Which samples a step list's entries take: a task list's, a plan's `### Task N:` headings', or a plan's boxes'. */
-const taskKind = (steps: Steps): TaskKind => (steps.source === null ? 'task' : steps.unit === 'tasks' ? 'planTask' : 'planStep')
-
 /** Reads the history once a session: at its start, or at a turn's when the session started before the mod. */
 async function ensureHistory($: Dollar) {
   if (project !== null) return
@@ -410,7 +324,7 @@ type Waited = { shown: Spread | null; raw: Spread | null }
 /** One loop's countdown worked out again: its finished tasks learned, its estimate made and calibrated, its bar moved on. */
 function refreshed(eta: EtaTurn, detail: Detail, tasks: EtaInput['tasks'], rounds: number, now: number, waitedOn: readonly Waited[] | null): EtaTurn {
   const pace = paceOf(detail, eta.runs)
-  const learned = tasks === null ? eta : learnTasks(eta, tasks.list, tasks.kind, now, pace, history.sizes)
+  const learned = tasks === null ? eta : learnTasks(eta, tasks, now, pace, history.sizes)
   const own = estimate({
     now,
     pace,
@@ -440,7 +354,7 @@ async function refreshEta($: Dollar, now: number) {
     list.map(run =>
       run.eta === undefined || !isRunning(run)
         ? run
-        : { ...run, eta: refreshed(run.eta, detailOf(run), run.tasks.length > 0 ? { list: run.tasks, kind: 'task' } : null, run.steps, now, null) },
+        : { ...run, eta: refreshed(run.eta, detailOf(run), run.tasks.length > 0 ? run.tasks : null, run.steps, now, null) },
     ),
   )
   const l = await read($, live)
@@ -449,12 +363,12 @@ async function refreshEta($: Dollar, now: number) {
   const waitedOn = (await read($, agents))
     .filter(run => run.dispatchedByMain && isRunning(run) && (l === null || turnStart === undefined || run.startedAt >= turnStart))
     .map((run): Waited => ({ shown: run.eta?.last ?? null, raw: run.eta === undefined ? null : run.eta.lastRaw === undefined ? run.eta.last : run.eta.lastRaw }))
-  const steps = await readSteps($)
+  const taskList = await read($, tasks)
   await update($, etaTurn, eta => {
     if (eta === null) return eta
     // After the turn's own end, only the subagents it waits on are left to estimate.
     if (l === null) return tickEta(eta, { estimate: combine(null, waitedOn.map(w => w.shown)), raw: combine(null, waitedOn.map(w => w.raw)), items: [], source: null }, now)
-    return refreshed(eta, detailOf(l), steps.list.length > 0 ? { list: steps.list, kind: taskKind(steps) } : null, l.steps, now, waitedOn)
+    return refreshed(eta, detailOf(l), taskList.length > 0 ? taskList : null, l.steps, now, waitedOn)
   })
 }
 
@@ -480,7 +394,7 @@ async function takeReport($: Dollar, agentId: string | undefined, input: Record<
 }
 
 /**
- * The reminder to report, the first time a turn reaches `NUDGE_AFTER_TOOLS` calls with no report, task list or plan;
+ * The reminder to report, the first time a turn reaches `NUDGE_AFTER_TOOLS` calls with no report or task list;
  * or that a report may be out of date (`staleOf`). Marked in the same update that reads it, so calls that end together remind once.
  */
 async function nudgeOf($: Dollar): Promise<string | null> {
@@ -490,7 +404,7 @@ async function nudgeOf($: Dollar): Promise<string | null> {
   if (stale !== null) return stale
   const calls = l?.toolCalls ?? 0
   if (calls < NUDGE_AFTER_TOOLS) return null
-  if ((await readSteps($)).list.length > 0) return null
+  if ((await read($, tasks)).length > 0) return null
   let isDue = false
   await update($, etaTurn, eta => {
     if (eta === null || eta.nudged === true || eta.work !== null) return eta
@@ -518,7 +432,7 @@ async function staleOf($: Dollar, rounds: number): Promise<string | null> {
   return line
 }
 
-/** A change to a task list or plan file is a report too, for the stale rule. */
+/** A change to a task list is a report too, for the stale rule. */
 async function markReport($: Dollar, agentId: string | undefined, now: number) {
   if (!config.eta) return
   if (agentId !== undefined) {
@@ -528,17 +442,6 @@ async function markReport($: Dollar, agentId: string | undefined, now: number) {
     await update($, etaTurn, eta => (eta === null ? eta : { ...eta, lastReportRound: rounds }))
   }
   await refreshEta($, now)
-}
-
-/** Runs a change to the plan file, counted as a report only when the plan came out different (reading a README is no report). */
-async function reportsPlanChange($: Dollar, now: number, change: () => Promise<unknown>) {
-  if (!config.eta) {
-    await change()
-    return
-  }
-  const before = JSON.stringify(await read($, planFile))
-  await change()
-  if (JSON.stringify(await read($, planFile)) !== before) await markReport($, undefined, now)
 }
 
 export function shouldShow(l: Live, now: number, planSize: number): boolean {
@@ -595,12 +498,12 @@ function startTicking($: Dollar) {
   if (tickTimer !== null) return
   tickTimer = $.clock.every(1000, async () => {
     const now = await $.clock.now()
-    const plan = await readSteps($)
-    // A Progress list of two or more items counts as a plan for when the band appears.
+    const taskList = await read($, tasks)
+    // A Progress list of two or more items counts as a task list for when the band appears.
     const reported = (await read($, etaTurn))?.work?.items.length ?? 0
     let becameLong = false
     await update($, live, l => {
-      if (l === null || l.isLong || !shouldShow(l, now, Math.max(plan.list.length, reported))) return l
+      if (l === null || l.isLong || !shouldShow(l, now, Math.max(taskList.length, reported))) return l
       becameLong = true
       return { ...l, isLong: true }
     })
@@ -664,11 +567,6 @@ export function filesStat(detail: Detail, count = detail.files.length): Stat {
 }
 
 type StepRows = 'auto' | 'always' | 'never'
-
-/** Whether the band lists the steps: in `auto`, only a plan file's, since Claude Code draws its own task list. */
-export function showsStepRows(setting: StepRows, fromPlanFile: boolean): boolean {
-  return setting === 'always' || (setting === 'auto' && fromPlanFile)
-}
 
 export const register: Register = (on, options) => {
   const stepRows: StepRows = options.stepRows === 'always' || options.stepRows === 'never' ? options.stepRows : 'auto'
@@ -742,12 +640,11 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     const now = await $.clock.now()
     await update($, summary, () => null)
-    // A plan that finished last turn starts this one clean; an unfinished one carries on.
+    // A task list that finished last turn starts this one clean; an unfinished one carries on.
     await update($, tasks, list => (list.length > 0 && list.every(t => t.status === 'completed') ? [] : list))
-    await update($, planFile, plan => (plan !== null && stepsOf([], plan).progress === 1 ? null : plan))
     await update($, live, () => freshLive(e.turnId, now))
     await ensureHistory($)
-    // A Progress list belongs to its turn: unlike a plan, it does not carry over.
+    // A Progress list belongs to its turn: unlike a task list, it does not carry over.
     await update($, etaTurn, () => (config.eta ? freshEta(now) : null))
     stopFrames()
     scene.isFinishing = false
@@ -923,15 +820,6 @@ export const register: Register = (on, options) => {
       await update($, tasks, list => applyPlanTool(list, input, ran.result))
       await markReport($, undefined, ended)
     }
-    if (!failed && e.tool === 'Bash') {
-      const reported = bashReported(ran)
-      if (reported.length > 0) {
-        await reportsPlanChange($, ended, () => update($, planFile, plan => (plan === null ? plan : withCompleted(plan, reported))))
-      }
-    }
-    if (!failed && PLAN_FILE_TOOLS.has(e.tool) && path !== null && isMarkdown(path)) {
-      await reportsPlanChange($, ended, () => trackPlanFile($, path, e.tool === 'Write' && typeof input.content === 'string' ? input.content : null, isSub))
-    }
     if (!isSub && ran.deny === undefined) {
       const nudge = await nudgeOf($)
       if (nudge !== null) return { ...ran, context: [...(ran.context ?? []), nudge] }
@@ -967,7 +855,7 @@ export const register: Register = (on, options) => {
     if (waiting === 0) stopTicking()
 
     const l = await read($, live)
-    const plan = await readSteps($)
+    const taskList = await read($, tasks)
     const eta = config.eta ? await read($, etaTurn) : null
     // The first estimate against what followed, for a turn that answered with nothing left running.
     const first = e.reason === 'answer' && waiting === 0 ? (eta?.first ?? null) : null
@@ -1000,10 +888,8 @@ export const register: Register = (on, options) => {
             .sort((a, b) => b[1] - a[1])
             .slice(0, 6),
           files: detailOf(l).files.length,
-          tasksDone: plan.list.filter(t => t.status === 'completed').length,
-          tasksTotal: plan.list.length,
-          stepsUnit: plan.unit,
-          stepsSource: plan.source,
+          tasksDone: taskList.filter(t => t.status === 'completed').length,
+          tasksTotal: taskList.length,
           tokensIn,
           tokensCached: Math.max(l.tokensCached, usage?.cache_read_input_tokens ?? 0),
           tokensCacheWrite: Math.max(l.tokensCacheWrite ?? 0, usage?.cache_creation_input_tokens ?? 0),
@@ -1015,9 +901,9 @@ export const register: Register = (on, options) => {
           ...(verdict === null ? {} : { eta: verdict }),
         }
         await update($, summary, () => done)
-        // Handed off to a background subagent, the work is not done: the bar keeps what the plan says.
+        // Handed off to a background subagent, the work is not done: the bar keeps what the task list says.
         scene.palette = waiting > 0 ? ACCENT : e.reason === 'answer' ? DONE : e.reason === 'aborted' ? WARN : FAIL
-        scene.target = e.reason === 'answer' && waiting === 0 ? 1 : (eta?.fill ?? plan.progress ?? scene.shown)
+        scene.target = e.reason === 'answer' && waiting === 0 ? 1 : (eta?.fill ?? planProgress(taskList) ?? scene.shown)
         scene.finishFrom = scene.shown
         scene.finishFrames = 0
         scene.isFinishing = true
@@ -1271,8 +1157,7 @@ export const register: Register = (on, options) => {
 
     const l = await read($, live)
     const s = await read($, summary)
-    const steps = await readSteps($)
-    const plan = steps.list
+    const taskList = await read($, tasks)
 
     const showLive = l !== null && l.isLong
     const showSummary = !showLive && s !== null && !e.props.isWorking
@@ -1291,8 +1176,8 @@ export const register: Register = (on, options) => {
 
     if (showLive) {
       const eta = config.eta ? await read($, etaTurn) : null
-      // With the countdown on, the bar follows its fill; without it, the share of the plan done.
-      const progress = config.eta ? (eta?.fill ?? null) : steps.progress
+      // With the countdown on, the bar follows its fill; without it, the share of the task list done.
+      const progress = config.eta ? (eta?.fill ?? null) : planProgress(taskList)
       const isUp = isGrowing(eta?.upUntil, now)
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
       const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth)
@@ -1308,10 +1193,10 @@ export const register: Register = (on, options) => {
       if (isTerminal) scene.barWidth = barWidth
 
       const work = eta?.work ?? null
-      // Claude Code draws no list for Claude's reports, so the band lists them, unless a task list or plan file has the rows.
-      const usesWork = work !== null && plan.length === 0
-      const list = usesWork ? workTasks(work) : plan
-      const unit = usesWork ? 'items' : steps.unit
+      // Claude Code draws no list for Claude's reports, so the band lists them, unless a task list has the rows.
+      const usesWork = work !== null && taskList.length === 0
+      const list = usesWork ? workTasks(work) : taskList
+      const unit = usesWork ? 'items' : 'tasks'
       const current = list.find(task => task.status === 'in_progress')
       const named = current === undefined ? undefined : usesWork ? capitalize(current.subject) : (current.activeForm ?? current.subject)
       const headline = named ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking'
@@ -1349,7 +1234,6 @@ export const register: Register = (on, options) => {
             </Text>
           </Box>
           <Text dimColor>
-            {steps.source !== null ? `${steps.source} · ` : ''}
             {list.length > 0 ? `${done}/${list.length} ${unit} · ` : ''}
             {duration(now - l.startedAt)}
           </Text>
@@ -1376,7 +1260,8 @@ export const register: Register = (on, options) => {
         )
       }
 
-      if (usesWork ? stepRows !== 'never' : showsStepRows(stepRows, steps.source !== null)) {
+      // A task list's rows only in `always`: Claude Code draws its own list for it.
+      if (usesWork ? stepRows !== 'never' : stepRows === 'always') {
         rows.push(...stepRowsOf(list, Math.max(0, Math.min(MAX_TASK_ROWS, maxRows - rows.length - 1)), usesWork ? trailsOf(eta?.items) : {}))
       }
 
@@ -1405,7 +1290,7 @@ export const register: Register = (on, options) => {
               ? 'Stopped (refusal)'
               : 'Ended with an error'
     const eta = config.eta ? await read($, etaTurn) : null
-    // With the countdown on, the bar stays where its fill got to; without it, at the plan's share done.
+    // With the countdown on, the bar stays where its fill got to; without it, at the task list's share done.
     const planned = sum.fill ?? (sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null)
     // Waiting on subagents, the fill goes on with their countdowns.
     const held = waiting > 0 ? (eta?.fill ?? planned) : planned
@@ -1438,15 +1323,14 @@ export const register: Register = (on, options) => {
       (sum.files > 0 || changedFiles(detail)) && filesStat(detail, sum.files),
       detail.reads.length > 0 && stat('reads', `${detail.reads.length} read`),
       stat('steps', plural(sum.steps, 'model step')),
-      sum.tasksTotal > 0 &&
-        stat('tasks', `${sum.tasksDone}/${sum.tasksTotal} ${sum.stepsUnit} done${sum.stepsSource !== null ? ` (${sum.stepsSource})` : ''}`),
+      sum.tasksTotal > 0 && stat('tasks', `${sum.tasksDone}/${sum.tasksTotal} tasks done`),
       sum.errors > 0 && stat('errors', plural(sum.errors, 'failed call'), 'error'),
     ]
     const usage = [stat('tokens', `${tokens(sum.tokensIn)} in (${cachePct}% cached) · ${tokens(sum.tokensOut)} out${(sum.cost ?? 0) > 0 ? ` · ${usd(sum.cost ?? 0)} this task` : ''}${sum.model ? ` · ${sum.model}` : ''}`)]
     const src: DetailSource = {
       detail,
       agents: await read($, agents),
-      tasks: plan,
+      tasks: taskList,
       tokensIn: sum.tokensIn,
       tokensOut: sum.tokensOut,
       tokensCached: sum.tokensCached,

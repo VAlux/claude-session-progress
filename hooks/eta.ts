@@ -11,8 +11,6 @@ export const SEEDS: Sizes = {
   m: [3, 4, 5, 7, 10],
   l: [8, 10, 12, 18, 25],
   task: [3, 4, 5, 7, 10],
-  planTask: [3, 4, 5, 7, 10],
-  planStep: [3, 4, 5, 7, 10],
 }
 
 /** How many round-equivalents of evidence the seeds weigh against this turn's own, in *c*. */
@@ -166,10 +164,8 @@ export function runningSince(detail: Detail, work: Work | null): number | null {
 /** A task's key for its timing: its id and its text, since a TodoWrite list numbers its entries by position. */
 export const taskKey = (task: Task) => `${task.id}:${task.subject}`
 
-/** Which kind of list an estimate's items come from: a task list, a plan's tasks, or a plan's steps. */
-export type TaskKind = 'task' | 'planTask' | 'planStep'
-/** Which report an estimate was worked out from: a Progress list, a task list, or a plan. */
-export type EtaSource = 'progress' | 'tasks' | 'plan'
+/** Which report an estimate was worked out from: a Progress list or a task list. */
+export type EtaSource = 'progress' | 'tasks'
 
 /** What a loop's estimate is worked out from. */
 export type EtaInput = {
@@ -178,7 +174,7 @@ export type EtaInput = {
   work: Work | null
   /** Since when the top item's command has run, for a `run` item whose command is running. */
   runningSince: number | null
-  tasks: { list: readonly Task[]; kind: TaskKind } | null
+  tasks: readonly Task[] | null
   since: Readonly<Record<string, number>>
   sizes: Sizes
   commands: Readonly<Record<string, readonly number[]>>
@@ -194,7 +190,7 @@ export type EtaOutput = { estimate: Spread | null; items: { key: string; ms: num
 
 const NONE: EtaOutput = { estimate: null, items: [], source: null }
 
-/** A loop's estimate: a Progress list's when it has one, else its task list's or plan's, else none. */
+/** A loop's estimate: a Progress list's when it has one, else its task list's, else none. */
 export function estimate(x: EtaInput): EtaOutput {
   if (x.pace === null || !(x.pace > 0)) return NONE
   const pace = x.pace
@@ -211,10 +207,10 @@ export function estimate(x: EtaInput): EtaOutput {
       spentMs: i > 0 ? null : x.now - (item.run !== undefined && x.runningSince !== null ? x.runningSince : work.topSince),
       isMeasured: item.run !== undefined && (x.commands[commandKey(item.run)]?.length ?? 0) > 0,
     }))
-  } else if (x.tasks !== null && x.tasks.list.length > 0) {
-    source = x.tasks.kind === 'task' ? 'tasks' : 'plan'
-    const basis = sizedBasis(x.sizes[x.tasks.kind], pace, x.c)
-    parts = x.tasks.list
+  } else if (x.tasks !== null && x.tasks.length > 0) {
+    source = 'tasks'
+    const basis = sizedBasis(x.sizes.task, pace, x.c)
+    parts = x.tasks
       .filter(task => task.status !== 'completed')
       .map(task => ({ key: task.id, basis, spentMs: task.status === 'in_progress' ? x.now - (x.since[taskKey(task)] ?? x.now) : null, isMeasured: false }))
   } else {
@@ -301,7 +297,7 @@ export function learnOpenTop(eta: EtaTurn, closing: number | null, pace: number 
 }
 
 /** Notes when each task came into progress, and learns the ones that finished since, each once. */
-export function learnTasks(eta: EtaTurn, list: readonly Task[], kind: TaskKind, now: number, pace: number | null, sizes: Sizes): EtaTurn {
+export function learnTasks(eta: EtaTurn, list: readonly Task[], now: number, pace: number | null, sizes: Sizes): EtaTurn {
   let out = eta
   for (const task of list) {
     const key = taskKey(task)
@@ -310,7 +306,7 @@ export function learnTasks(eta: EtaTurn, list: readonly Task[], kind: TaskKind, 
       out = { ...out, since: { ...out.since, [key]: now } }
     } else if (task.status === 'completed' && since !== undefined && !out.counted.includes(key)) {
       out = { ...out, counted: [...out.counted, key] }
-      if (pace !== null && pace > 0) out = withFinished(out, kind, (now - since) / pace, sizes)
+      if (pace !== null && pace > 0) out = withFinished(out, 'task', (now - since) / pace, sizes)
     }
   }
   return out

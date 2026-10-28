@@ -237,16 +237,15 @@ const tasks = (statuses: Task['status'][]): Task[] => statuses.map((status, i) =
 
 test("a task list's estimate: the task in progress from when it began, the pending ones' medians", () => {
   const list = tasks(['completed', 'in_progress', 'pending'])
-  const out = estimate(input({ tasks: { list, kind: 'task' }, since: { [taskKey(list[1]!)]: NOW - 20_000 } }))
+  const out = estimate(input({ tasks: list, since: { [taskKey(list[1]!)]: NOW - 20_000 } }))
   expect(out.estimate?.ms).toBe(90_000)
   expect(out.source).toBe('tasks')
   expect(out.items.map(i => i.key)).toEqual(['todo-1', 'todo-2'])
-  expect(estimate(input({ tasks: { list: tasks(['pending', 'pending']), kind: 'planStep' } })).source).toBe('plan')
 })
 
 test('an item far past its range (twice its top) with no report for 12 rounds loses its estimate', () => {
   const list = tasks(['in_progress'])
-  const since = (ago: number) => ({ tasks: { list, kind: 'task' as const }, since: { [taskKey(list[0]!)]: NOW - ago } })
+  const since = (ago: number) => ({ tasks: list, since: { [taskKey(list[0]!)]: NOW - ago } })
   // Range tops out at 78s: 160s is past twice that, 140s only past once.
   expect(estimate(input({ ...since(160_000), roundsSinceReport: 11 })).estimate).not.toBeNull()
   expect(estimate(input({ ...since(160_000), roundsSinceReport: 12 })).estimate).toBeNull()
@@ -265,8 +264,8 @@ test('down to its answer, a list is none after three rounds of time too, however
 
 test('a task list with every task done is one round, and none two rounds on', () => {
   const done = tasks(['completed', 'completed'])
-  expect(estimate(input({ tasks: { list: done, kind: 'task' }, roundsSinceReport: 0 })).estimate).toEqual({ ms: 10_000, lowMs: 10_000, highMs: 10_000 })
-  expect(estimate(input({ tasks: { list: done, kind: 'task' }, roundsSinceReport: 2 })).estimate).toBeNull()
+  expect(estimate(input({ tasks: done, roundsSinceReport: 0 })).estimate).toEqual({ ms: 10_000, lowMs: 10_000, highMs: 10_000 })
+  expect(estimate(input({ tasks: done, roundsSinceReport: 2 })).estimate).toBeNull()
 })
 
 test('a finished sized item is learned in round-equivalents, and adds to c; a run item is not', () => {
@@ -281,22 +280,22 @@ test('a finished sized item is learned in round-equivalents, and adds to c; a ru
 
 test('a task is timed from when it came into progress to when it finished, once', () => {
   const list = tasks(['in_progress', 'pending'])
-  const started = learnTasks(freshEta(0), list, 'task', 1_000, 10_000, SEEDS)
+  const started = learnTasks(freshEta(0), list, 1_000, 10_000, SEEDS)
   expect(started.since).toEqual({ [taskKey(list[0]!)]: 1_000 })
-  const finished = learnTasks(started, tasks(['completed', 'in_progress']), 'task', 41_000, 10_000, SEEDS)
+  const finished = learnTasks(started, tasks(['completed', 'in_progress']), 41_000, 10_000, SEEDS)
   expect(finished.pending.sizes.task).toEqual([4])
   expect(finished.since[taskKey(list[1]!)]).toBe(41_000)
-  const again = learnTasks(finished, tasks(['completed', 'in_progress']), 'task', 50_000, 10_000, SEEDS)
+  const again = learnTasks(finished, tasks(['completed', 'in_progress']), 50_000, 10_000, SEEDS)
   expect(again.pending.sizes.task, 'never learned twice').toEqual([4])
-  expect(learnTasks(freshEta(0), tasks(['completed']), 'task', 1_000, 10_000, SEEDS).pending.sizes, 'one never seen in progress').toEqual({})
+  expect(learnTasks(freshEta(0), tasks(['completed']), 1_000, 10_000, SEEDS).pending.sizes, 'one never seen in progress').toEqual({})
 })
 
 test('a rewritten task list times the task now at a position as a new one', () => {
   const one = (status: Task['status'], subject: string): Task[] => [{ id: 'todo-0', subject, status }]
-  const a = learnTasks(freshEta(0), one('in_progress', 'write types'), 'task', 0, 10_000, SEEDS)
-  const b = learnTasks(a, one('completed', 'write types'), 'task', 30_000, 10_000, SEEDS)
-  const c = learnTasks(b, one('in_progress', 'write docs'), 'task', 40_000, 10_000, SEEDS)
-  const d = learnTasks(c, one('completed', 'write docs'), 'task', 60_000, 10_000, SEEDS)
+  const a = learnTasks(freshEta(0), one('in_progress', 'write types'), 0, 10_000, SEEDS)
+  const b = learnTasks(a, one('completed', 'write types'), 30_000, 10_000, SEEDS)
+  const c = learnTasks(b, one('in_progress', 'write docs'), 40_000, 10_000, SEEDS)
+  const d = learnTasks(c, one('completed', 'write docs'), 60_000, 10_000, SEEDS)
   expect(d.pending.sizes.task).toEqual([3, 2])
 })
 

@@ -2,21 +2,8 @@ export type TaskStatus = 'pending' | 'in_progress' | 'completed'
 
 export type Task = { id: string; subject: string; activeForm?: string; status: TaskStatus }
 
-export type PlanItem = { text: string; done: boolean }
-
-/** A `### Task N:` heading of a plan, with the boxes beneath it. */
-export type PlanTask = { n: number; text: string; steps: number; stepsDone: number }
-
-/**
- * A Markdown plan or spec whose `- [ ]` / `- [x]` boxes stand for the steps.
- * With two or more `### Task N:` headings its tasks are the steps instead, and `completed`
- * holds the ones a superpowers ledger reported done (its executor never ticks the boxes).
- * Both are absent on a plan kept from before they existed.
- */
-export type PlanFile = { path: string; name: string; items: PlanItem[]; tasks?: PlanTask[]; completed?: number[] }
-
-/** The kinds of work whose times the countdown learns, in round-equivalents: Claude's item sizes, and a task list's, a plan's tasks' and a plan's steps'. */
-export type SampleKind = 's' | 'm' | 'l' | 'task' | 'planTask' | 'planStep'
+/** The kinds of work whose times the countdown learns, in round-equivalents: Claude's item sizes, and a task list's tasks. */
+export type SampleKind = 's' | 'm' | 'l' | 'task'
 
 /** A time in milliseconds with its likely range. */
 export type Spread = { ms: number; lowMs: number; highMs: number }
@@ -37,7 +24,7 @@ export type EtaTurn = {
   work: Work | null
   /** The command keys of every `run` item reported this turn, so a finished one's long round stays out of the pace. */
   runs: string[]
-  /** When each task or plan entry came into progress, and the ones already learned: both keyed by each task's id and text (its `taskKey`). */
+  /** When each task came into progress, and the ones already learned: both keyed by each task's id and text (its `taskKey`). */
   since: Record<string, number>
   counted: string[]
   /** The estimate as last worked out, and each listed item's own: the time left on the one in progress, the median of the rest. */
@@ -45,7 +32,7 @@ export type EtaTurn = {
   items: { key: string; ms: number }[]
   /**
    * The first estimate, for the summary and the log: when it came, what it said, what it rested on, and what it said before
-   * calibration (`raw`, absent on a turn kept from before it existed).
+   * calibration (`raw`, absent on a turn kept from before it existed). `plan` only on a turn kept from when plan files were read.
    */
   first: (Spread & { atMs: number; source: 'progress' | 'tasks' | 'plan'; raw?: Spread }) | null
   fill: number | null
@@ -138,8 +125,9 @@ export type Summary = {
   files: number
   tasksDone: number
   tasksTotal: number
-  stepsUnit: 'tasks' | 'steps'
-  stepsSource: string | null
+  /** No longer written: what a plan file's steps were called, and its name, on a summary kept from when plan files were read. */
+  stepsUnit?: 'tasks' | 'steps'
+  stepsSource?: string | null
   tokensIn: number
   tokensCached: number
   tokensCacheWrite?: number
@@ -197,7 +185,6 @@ declare module 'claude-code' {
       live: Live | null
       summary: Summary | null
       tasks: Task[]
-      planFile: PlanFile | null
       totals: Totals
       tick: number
       agents: AgentRun[]
