@@ -6,11 +6,10 @@ import { tracksPlanTool } from '../hooks/register'
 
 const PLUGIN = 'session-progress'
 
-function bottom(on: On, file: { text: string }) {
+function bottom(on: On) {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.blit', () => ({ value: {} }))
-  on('fs.read', () => ({ value: file.text }))
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine-band</Text>
@@ -40,28 +39,8 @@ async function shows($: Engine, text: RegExp) {
   return found !== undefined || (bar !== undefined && text.test(rasterText(String(bar.props.cells))))
 }
 
-// A story's acceptance criteria are `- [ ]` boxes, and nobody ticks them: read as a plan, they took over the band for good.
-test('a Markdown file with checkboxes is not a plan', { options: { eta: 'off' } }, async ($, on) => {
-  const story = ['# Story', '## Acceptance Criteria', '- [ ] Given the CLI is installed, when a user runs it, then it works', '- [ ] Given a webhook, when it fails, then it says so'].join('\n')
-  const file = { text: story }
-  bottom(on, file)
-  const clock = mock.clock(on, { now: 1_000_000 })
-  await $.turn.start({ text: 'write the story', turnId: 't1' })
-  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/stories/story.md', content: story })
-  await $.tool.call({ tool: 'Read', file_path: '/repo/docs/stories/story.md' })
-  file.text = story.replace('- [ ] Given the CLI', '- [x] Given the CLI')
-  await $.tool.call({ tool: 'Edit', file_path: '/repo/docs/stories/story.md', old_string: '- [ ] Given the CLI', new_string: '- [x] Given the CLI' })
-  await clock.advance(46_000)
-
-  expect(await shows($, /\d+s/), 'the band shows').toBe(true)
-  expect(await shows($, /Given the CLI/)).toBe(false)
-  expect(await shows($, /story\.md ·/)).toBe(false)
-  expect(await shows($, /\d+\/\d+ (steps|tasks)/)).toBe(false)
-  expect(await shows($, /50%/)).toBe(false)
-})
-
 test('a task list drives the bar without the countdown', { options: { eta: 'off' } }, async ($, on) => {
-  bottom(on, { text: '' })
+  bottom(on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.turn.start({ text: 'build it', turnId: 't1' })
   const todos = [

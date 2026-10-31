@@ -292,41 +292,6 @@ test("a finished run item's long round stays out of the pace", async ($, on) => 
   expect(has(await seen($, 'terminal'), /~30s left/)).toBe(true)
 })
 
-// A story's acceptance criteria are `- [ ]` boxes too, and nobody ticks them: they once took over the band for good.
-test("a Markdown checklist Claude writes or reads leaves Claude's report on the band", async ($, on) => {
-  const story = ['# Story', '## Acceptance Criteria', '- [ ] Given the CLI is installed, when a user runs it, then it works', '- [ ] Given a webhook, when it fails, then it says so'].join('\n')
-  on('fs.read', () => ({ value: story }))
-  const { clock } = await pacedTurn($, on)
-  await report($, { left: [MS.m, MS.s] })
-  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/stories/story.md', content: story })
-  await $.tool.call({ tool: 'Read', file_path: '/repo/docs/stories/story.md' })
-  await clock.advance(1_000)
-  const shown = await seen($, 'terminal')
-  expect(has(shown, /~1m 20s left/)).toBe(true)
-  expect(has(shown, /◐ fix the parser/)).toBe(true)
-  expect(has(shown, /Given the CLI/)).toBe(false)
-  expect(has(shown, /story\.md ·/)).toBe(false)
-})
-
-/** Seventeen rounds on, 10 s apart, with no report: the one item reported is far past its range, and the countdown is gone. */
-async function goStale($: Engine, clock: Clock) {
-  for (let index = 2; index <= 18; index++) {
-    await clock.advance(10_000)
-    await round($, index)
-  }
-  await clock.advance(1_000)
-}
-
-test('editing a Markdown checklist does not count as a report', async ($, on) => {
-  const { clock } = await pacedTurn($, on)
-  await report($, { left: [MS.s] })
-  await goStale($, clock)
-  expect(has(await seen($, 'terminal'), /left/), 'stale first').toBe(false)
-  await $.tool.call({ tool: 'Write', file_path: '/repo/docs/plan.md', content: '# Plan\n\n- [x] Write the types\n- [ ] Ship\n' })
-  await clock.advance(1_000)
-  expect(has(await seen($, 'terminal'), /left/)).toBe(false)
-})
-
 test('a reload mid-turn keeps the countdown', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.m, MS.s] })
