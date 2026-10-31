@@ -376,17 +376,3 @@ export function tickEta(eta: EtaTurn, out: EtaOutput, now: number): EtaTurn {
     ...(isRebase ? { rebase: { at: now, from, to: share, change } } : {}),
   }
 }
-
-/** Where the listed items end on the bar, past its fill: each one's share of the estimate laid over what is left to fill; none for one item. */
-export function itemEnds(eta: EtaTurn): number[] {
-  const total = (eta.lastRaw === undefined ? eta.last : eta.lastRaw)?.ms
-  const fill = eta.fill
-  if (fill === null || total === undefined || !(total > 0) || eta.items.length < 2) return []
-  const ends: number[] = []
-  let at = 0
-  for (const item of eta.items.slice(0, -1)) {
-    at += item.ms
-    ends.push(fill + (1 - fill) * Math.min(1, at / total))
-  }
-  return ends
-}

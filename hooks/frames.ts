@@ -8,12 +8,10 @@ export const WARN: Palette = { base: 0xd8a64a, glow: 0xffe2a6, dim: 0x8a6a2c }
 export const FAIL: Palette = { base: 0xd2555a, glow: 0xffb0b2, dim: 0x8a3236 }
 
 const TRACK = 0x5c5c5c
-const TICK = 0x8c8c8c
 const DEFAULT_BG = 0x01000000
 const FILLED = 0x2501 // ━
 const EMPTY = 0x2500 // ─
 const HALF = 0x2578 // ╸
-const TICK_UP = 0x2534 // ┴
 
 const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
@@ -44,8 +42,6 @@ export type BarOptions = {
   /** Text drawn in the bar's own last cells (a percentage, a clock), so it can never wrap away from it. */
   label?: string
   labelColor?: number
-  /** Where items end past the fill, in [0, 1]: a tick in the track at each. */
-  ends?: readonly number[]
   /** The span the bar just gave back (`from` above it) or just gained (`from` below it), drawn in `color` at strength `k` in [0, 1]. */
   change?: ChangeSpan | null
 }
@@ -80,7 +76,7 @@ export function pctLabel(progress: number): string {
  * driving the shimmer.
  */
 export function barCells(width: number, progress: number | null, t: number, palette: Palette, options: BarOptions = {}): string {
-  const { shimmer = true, label = '', labelColor = palette.base, ends = [], change = null } = options
+  const { shimmer = true, label = '', labelColor = palette.base, change = null } = options
   const w = Math.max(1, Math.min(512, Math.floor(width)))
   const words = new Uint32Array(w * 3)
   const put = (i: number, glyph: number, color: number) => {
@@ -116,7 +112,6 @@ export function barCells(width: number, progress: number | null, t: number, pale
   const head = exact - full >= 0.5 ? full + 1 : full
   const shimmerAt = ((t % 2600) / 2600) * (full + 16) - 8
   const changeAt = change === null ? exact : Math.max(0, Math.min(1, change.from)) * barW
-  const ticks = tickCells(ends, barW, head)
   for (let i = 0; i < barW; i++) {
     if (i < full) {
       const gradient = lerp(palette.dim, palette.base, full <= 1 ? 1 : 0.35 + (0.65 * i) / (full - 1))
@@ -128,23 +123,10 @@ export function barCells(width: number, progress: number | null, t: number, pale
     } else if (change !== null && i < Math.round(changeAt)) {
       put(i, FILLED, lerp(TRACK, change.color, change.k))
     } else {
-      put(i, ticks.has(i) ? TICK_UP : EMPTY, ticks.has(i) ? TICK : TRACK)
+      put(i, EMPTY, TRACK)
     }
   }
   return encode(words)
-}
-
-/** The track cells ticked where items end: past the bar's head and short of its end, at least two cells apart. */
-function tickCells(ends: readonly number[], barW: number, head: number): Set<number> {
-  const ticks = new Set<number>()
-  let prev = head
-  for (const end of [...ends].sort((a, b) => a - b)) {
-    const i = Math.round(end * barW)
-    if (i - prev < 2 || i >= barW - 1) continue
-    ticks.add(i)
-    prev = i
-  }
-  return ticks
 }
 
 export function spinnerCells(t: number, palette: Palette): string {
@@ -165,33 +147,11 @@ export const hex = (color: number) => `#${(color & 0xffffff).toString(16).padSta
 const SVG_W = 1000
 const SVG_H = 6
 const SVG_TRACK = '<rect width="1000" height="6" rx="3" fill="#8c8c8c" fill-opacity="0.3"/>'
-const SVG_GAP = 8
 
 export type SvgBarOptions = {
   shimmer?: boolean
-  /** Where items end past the fill, in [0, 1]: a gap in the track at each. */
-  ends?: readonly number[]
   /** The bar's jump back onto the share done, `ageMs` ago: the span given back drains away, one gained glows and fades. */
   jump?: { from: number; to: number; ageMs: number } | null
-}
-
-/** The track in pieces, split where items end past the fill: each piece short of the next gap. */
-function trackSvg(fill: number, ends: readonly number[]): string {
-  const cuts: number[] = []
-  for (const end of [...ends].sort((a, b) => a - b)) {
-    const x = Math.round(end * SVG_W)
-    if (x - (cuts[cuts.length - 1] ?? fill) < 20 || x > SVG_W - 20) continue
-    cuts.push(x)
-  }
-  if (cuts.length === 0) return SVG_TRACK
-  const edges = [0, ...cuts, SVG_W]
-  return edges
-    .slice(0, -1)
-    .map((x, i) => {
-      const to = edges[i + 1]! - (i < cuts.length ? SVG_GAP : 0)
-      return `<rect x="${x}" width="${to - x}" height="6" rx="3" fill="#8c8c8c" fill-opacity="0.3"/>`
-    })
-    .join('')
 }
 
 /** The span a jump gave back or gained, animated from where it stands `ageMs` in: a negative `begin` joins it mid-way after a redraw. */
@@ -239,7 +199,7 @@ export function barSvg(progress: number | null, palette: Palette, options: SvgBa
       `<g clip-path="url(#k)"><rect x="-120" width="120" height="6" fill="url(#s)">` +
       `<animate attributeName="x" from="-120" to="${fill}" dur="2.6s" repeatCount="indefinite"/></rect></g>`
     : ''
-  return { source: `${open}${trackSvg(fill, options.ends ?? [])}${bar}${shimmer}${jump}</svg>`, isAnimated }
+  return { source: `${open}${SVG_TRACK}${bar}${shimmer}${jump}</svg>`, isAnimated }
 }
 
 /** The desktop's live spinner: an arc turning on its own. */

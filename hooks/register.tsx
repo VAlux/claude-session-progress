@@ -64,7 +64,6 @@ import {
   learnOpenTop,
   learnTasks,
   paceOf,
-  itemEnds,
   runningSince,
   taskChange,
   tickEta,
@@ -149,8 +148,8 @@ function taskListLine(tools: readonly string[]): string | null {
 
 type Dollar = EngineInterface
 
-/** `ends`: where items end past the fill. `jump`: the bar's last jump back onto the share done, `ageMs` ago, while it still shows. */
-type BarLook = { shimmer: boolean; label: string; labelColor: number; ends?: readonly number[]; jump?: Jump | null }
+/** `jump`: the bar's last jump back onto the share done, `ageMs` ago, while it still shows. */
+type BarLook = { shimmer: boolean; label: string; labelColor: number; jump?: Jump | null }
 type Jump = { from: number; to: number; ageMs: number }
 
 /** What draws the band's spinner, marks and bar on one surface; the rows around them are the same on both. */
@@ -189,8 +188,8 @@ function desktopMarks({ Box, Text, Svg }: Elements['desktop']): Marks {
         {glyph}
       </Text>
     ),
-    bar: (key, _columns, progress, _t, palette, { shimmer, label, labelColor, ends, jump }) => {
-      const { source, isAnimated } = barSvg(progress, palette, { shimmer, ends, jump })
+    bar: (key, _columns, progress, _t, palette, { shimmer, label, labelColor, jump }) => {
+      const { source, isAnimated } = barSvg(progress, palette, { shimmer, jump })
       const pct = label.trim()
       return (
         <Box flexDirection="row" flexGrow={1} alignItems="center" gap={1}>
@@ -218,8 +217,7 @@ const scene = {
   isFinishing: false,
   finishFrom: 0,
   finishFrames: 0,
-  // Where items end past the fill, and the bar's jump the frames animate: from where to where, since when (Date.now()).
-  ends: [] as readonly number[],
+  // The bar's jump the frames animate: from where to where, since when (Date.now()).
   jump: null as { from: number; to: number; t0: number } | null,
   // The countdown's last jump the band has taken in, by when it came.
   rebaseAt: null as number | null,
@@ -510,7 +508,7 @@ function paint($: Dollar) {
   const jump = sceneJump(t)
   const change = jump === null ? null : changeSpan(jump, jump.ageMs, scene.palette)
   if (change === null) scene.jump = null
-  const cells = barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor, ends: scene.isFinishing ? [] : scene.ends, change })
+  const cells = barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor, change })
   $.ui.blit({ requestId: scene.requestId, key: BAR_KEY, cells }).catch(skipFrame)
   if (!scene.isFinishing) {
     $.ui.blit({ requestId: scene.requestId, key: SPINNER_KEY, cells: spinnerCells(t, scene.palette) }).catch(skipFrame)
@@ -961,7 +959,6 @@ export const register: Register = (on, options) => {
         scene.finishFrames = 0
         scene.isFinishing = true
         scene.jump = null
-        scene.ends = []
         startFrames($)
       } else {
         stopFrames()
@@ -1147,7 +1144,6 @@ export const register: Register = (on, options) => {
             : pctLabel(progress)
       const labelColor = label === '' ? MUTED : isUp ? WARN.base : note?.isDown ? DONE.base : palette.base
       // A subagent's bar has no frame loop: its jump steps on with each redraw.
-      const ends = isDone || runEta === undefined ? [] : itemEnds(runEta)
       const jump = isDone ? null : jumpOf(runEta, now)
       const detail = detailOf(run)
       const stats = [
@@ -1185,7 +1181,7 @@ export const register: Register = (on, options) => {
           </Text>
         </Box>,
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
-          {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor, ends, jump })}
+          {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor, jump })}
         </Box>,
         statsRow('stats', stats),
       ]
@@ -1242,7 +1238,6 @@ export const register: Register = (on, options) => {
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
       const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth, note)
       const labelColor = label === '' ? MUTED : isUp ? WARN.base : note?.isDown ? DONE.base : ACCENT.base
-      const ends = eta === null ? [] : itemEnds(eta)
       // A last live draw can land after the turn ended: it must not repaint the finish orange.
       if (isTerminal && !scene.isFinishing) {
         scene.target = progress
@@ -1250,7 +1245,6 @@ export const register: Register = (on, options) => {
         scene.showPct = !config.eta && progress !== null
         scene.label = label
         scene.labelColor = labelColor
-        scene.ends = ends
         // A jump not yet taken in: given back, the bar drops at once and the span drains after it; gained, the bar eases up and the span glows.
         const rebase = eta?.rebase
         if (rebase !== undefined && rebase.at !== scene.rebaseAt) {
@@ -1312,7 +1306,7 @@ export const register: Register = (on, options) => {
         </Box>,
         // A fixed width, as the head row has: in a band laid out narrower than bodyColumns the bar would be squeezed and its last cells wrap.
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
-          {marks.bar(BAR_KEY, barWidth, progress === null ? null : isTerminal ? scene.shown : progress, t, ACCENT, { shimmer: true, label, labelColor, ends, jump })}
+          {marks.bar(BAR_KEY, barWidth, progress === null ? null : isTerminal ? scene.shown : progress, t, ACCENT, { shimmer: true, label, labelColor, jump })}
         </Box>,
         statsRow('stats', stats),
       ]

@@ -12,7 +12,6 @@ import {
   estimate,
   freshEta,
   isUsable,
-  itemEnds,
   learnCommand,
   learnItem,
   learnOpenTop,
@@ -416,13 +415,6 @@ test(`with no plan change the bar jumps only once it drifts more than ${DRIFT * 
   expect(far.rebase?.change).toBeNull()
 })
 
-test("where items end lies past the fill, each in proportion to its estimate; one item or no fill has none", () => {
-  const eta = { ...freshEta(0), fill: 0.5, last: { ms: 100_000, lowMs: 0, highMs: 0 }, items: [{ key: 'a', ms: 20_000 }, { key: 'b', ms: 30_000 }, { key: 'c', ms: 40_000 }] }
-  expect(itemEnds(eta)).toEqual([0.6, 0.75])
-  expect(itemEnds({ ...eta, lastRaw: { ms: 200_000, lowMs: 0, highMs: 0 } }), 'laid out by the estimate before calibration').toEqual([0.55, 0.625])
-  expect(itemEnds({ ...eta, items: eta.items.slice(0, 1) })).toEqual([])
-  expect(itemEnds({ ...eta, fill: null })).toEqual([])
-})
 
 test('at the answer, the one item still listed is learned up to the closing round; with two left, a run item or no closing round, nothing is', () => {
   const listed = (items: WorkItem[]) => ({ ...freshEta(0), work: { items, finished: [], topSince: 10_000 } })

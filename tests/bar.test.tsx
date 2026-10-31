@@ -10,14 +10,6 @@ function cellsOf(cells: string): { glyph: string; color: number }[] {
   for (let i = 0; i < words.length; i += 3) out.push({ glyph: String.fromCodePoint(words[i] ?? 0x20), color: words[i + 1] ?? 0 })
   return out
 }
-const text = (cells: string) => cellsOf(cells).map(c => c.glyph).join('')
-
-test('the track has a tick where each item ends past the head, two cells apart at least, none at its very end', () => {
-  const ticked = barCells(20, 0.25, 0, ACCENT, { shimmer: false, ends: [0.5, 0.75] })
-  expect(text(ticked)).toBe('━━━━━─────┴────┴────')
-  expect(cellsOf(ticked)[10]?.color, 'brighter than the track').not.toBe(cellsOf(ticked)[9]?.color)
-  expect(text(barCells(20, 0.25, 0, ACCENT, { shimmer: false, ends: [0.3, 0.5, 0.52, 0.98] })), 'too near the head, a tick or the end').toBe('━━━━━─────┴─────────')
-})
 
 test('a span given back holds in amber, then drains into the fill; one gained glows, then fades', () => {
   const back = { from: 0.75, to: 0.25 }
@@ -39,10 +31,7 @@ test('a span given back holds in amber, then drains into the fill; one gained gl
   expect(glowing[2]?.color).not.toBe(0xffffff)
 })
 
-test('the desktop bar splits its track where items end, and animates a jump from where it stands after a redraw', () => {
-  const split = barSvg(0.25, ACCENT, { ends: [0.5] }).source
-  expect(split).toContain('<rect x="0" width="492" height="6" rx="3"')
-  expect(split).toContain('<rect x="500" width="500" height="6" rx="3"')
+test('the desktop bar animates a jump from where it stands after a redraw', () => {
   const back = barSvg(0.25, ACCENT, { jump: { from: 0.75, to: 0.25, ageMs: 600 } })
   expect(back.isAnimated, 'animated without the shimmer').toBe(true)
   expect(back.source).toContain('<rect x="250" width="500" height="6" rx="3" fill="#d8a64a"')

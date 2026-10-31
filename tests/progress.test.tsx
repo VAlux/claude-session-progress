@@ -148,7 +148,7 @@ test('stepRows: always lists a task list under the bar', { options: { stepRows: 
   expect(await shows($, true, /Validate/)).toBe(true)
 })
 
-test('stepRows: never lists nothing, not even a plan file', { options: { stepRows: 'never' } }, async ($, on) => {
+test('stepRows: never lists no tasks under the bar', { options: { stepRows: 'never' } }, async ($, on) => {
   await plannedTurn($, on)
   expect(await shows($, true, /Validate/)).toBe(false)
   expect(await shows($, true, /Writing tests/)).toBe(true)
