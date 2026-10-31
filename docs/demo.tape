@@ -52,7 +52,8 @@ Enter
 Sleep 5s
 Sleep 14s
 
-# The summary: files, then the failed calls.
+# The summary: files, then the failed calls, three counts on (reads, model steps,
+# failed calls): Claude always reads plan.md, so the reads count is there.
 Ctrl+X
 Tab
 Sleep 500ms
@@ -60,7 +61,6 @@ Tab
 Sleep 500ms
 Enter
 Sleep 5s
-Tab
 Tab
 Tab
 Tab
