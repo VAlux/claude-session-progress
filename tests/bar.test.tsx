@@ -12,9 +12,11 @@ function cellsOf(cells: string): { glyph: string; color: number }[] {
 }
 const text = (cells: string) => cellsOf(cells).map(c => c.glyph).join('')
 
-test('the track has a gap where each item ends past the head, two cells apart at least, none at its very end', () => {
-  expect(text(barCells(20, 0.25, 0, ACCENT, { shimmer: false, ends: [0.5, 0.75] }))).toBe('━━━━━───── ──── ────')
-  expect(text(barCells(20, 0.25, 0, ACCENT, { shimmer: false, ends: [0.3, 0.5, 0.52, 0.98] })), 'too near the head, a gap or the end').toBe('━━━━━───── ─────────')
+test('the track has a tick where each item ends past the head, two cells apart at least, none at its very end', () => {
+  const ticked = barCells(20, 0.25, 0, ACCENT, { shimmer: false, ends: [0.5, 0.75] })
+  expect(text(ticked)).toBe('━━━━━─────┴────┴────')
+  expect(cellsOf(ticked)[10]?.color, 'brighter than the track').not.toBe(cellsOf(ticked)[9]?.color)
+  expect(text(barCells(20, 0.25, 0, ACCENT, { shimmer: false, ends: [0.3, 0.5, 0.52, 0.98] })), 'too near the head, a tick or the end').toBe('━━━━━─────┴─────────')
 })
 
 test('a span given back holds in amber, then drains into the fill; one gained glows, then fades', () => {

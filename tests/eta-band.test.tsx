@@ -386,18 +386,18 @@ test('a planned bar moves back when tasks are added, names them, and shows the s
   expect(has(await seen($, 'desktop'), /\+3 tasks/), 'the note goes with the ↑').toBe(false)
 })
 
-test('a report that adds items moves the terminal bar back and leaves a gap in the track where each item ends', async ($, on) => {
+test('a report that adds items moves the terminal bar back and puts a tick on the track where each item ends', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await report($, { left: [MS.m, MS.s] })
   await clock.advance(1_000)
   const barOf = (shown: { bars: string[] }) => shown.bars.find(cells => cells.length > 1) ?? ''
   const track = barOf(await seen($, 'terminal'))
-  expect(track, 'one gap, between the two items').toMatch(/─ ─/)
+  expect(track, 'one tick, between the two items').toMatch(/─┴─/)
   await report($, { left: [MS.m, MS.s, MS.l] })
   await clock.advance(1_000)
   const shown = await seen($, 'terminal')
   expect(has(shown, /\+1 item · /)).toBe(true)
-  expect((barOf(shown).match(/─ (?=─)/g) ?? []).length, 'two gaps, among three items').toBe(2)
+  expect((barOf(shown).match(/─┴(?=─)/g) ?? []).length, 'two ticks, among three items').toBe(2)
 })
 
 test('on a narrow terminal the label shortens so the bar keeps its 20 cells', async ($, on) => {

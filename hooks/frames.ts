@@ -8,10 +8,12 @@ export const WARN: Palette = { base: 0xd8a64a, glow: 0xffe2a6, dim: 0x8a6a2c }
 export const FAIL: Palette = { base: 0xd2555a, glow: 0xffb0b2, dim: 0x8a3236 }
 
 const TRACK = 0x5c5c5c
+const TICK = 0x8c8c8c
 const DEFAULT_BG = 0x01000000
 const FILLED = 0x2501 // ━
 const EMPTY = 0x2500 // ─
 const HALF = 0x2578 // ╸
+const TICK_UP = 0x2534 // ┴
 
 const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
@@ -42,7 +44,7 @@ export type BarOptions = {
   /** Text drawn in the bar's own last cells (a percentage, a clock), so it can never wrap away from it. */
   label?: string
   labelColor?: number
-  /** Where items end past the fill, in [0, 1]: a gap in the track at each. */
+  /** Where items end past the fill, in [0, 1]: a tick in the track at each. */
   ends?: readonly number[]
   /** The span the bar just gave back (`from` above it) or just gained (`from` below it), drawn in `color` at strength `k` in [0, 1]. */
   change?: ChangeSpan | null
@@ -114,7 +116,7 @@ export function barCells(width: number, progress: number | null, t: number, pale
   const head = exact - full >= 0.5 ? full + 1 : full
   const shimmerAt = ((t % 2600) / 2600) * (full + 16) - 8
   const changeAt = change === null ? exact : Math.max(0, Math.min(1, change.from)) * barW
-  const gaps = gapCells(ends, barW, head)
+  const ticks = tickCells(ends, barW, head)
   for (let i = 0; i < barW; i++) {
     if (i < full) {
       const gradient = lerp(palette.dim, palette.base, full <= 1 ? 1 : 0.35 + (0.65 * i) / (full - 1))
@@ -126,23 +128,23 @@ export function barCells(width: number, progress: number | null, t: number, pale
     } else if (change !== null && i < Math.round(changeAt)) {
       put(i, FILLED, lerp(TRACK, change.color, change.k))
     } else {
-      put(i, gaps.has(i) ? 0x20 : EMPTY, TRACK)
+      put(i, ticks.has(i) ? TICK_UP : EMPTY, ticks.has(i) ? TICK : TRACK)
     }
   }
   return encode(words)
 }
 
-/** The track cells left blank where items end: past the bar's head and short of its end, at least two cells apart. */
-function gapCells(ends: readonly number[], barW: number, head: number): Set<number> {
-  const gaps = new Set<number>()
+/** The track cells ticked where items end: past the bar's head and short of its end, at least two cells apart. */
+function tickCells(ends: readonly number[], barW: number, head: number): Set<number> {
+  const ticks = new Set<number>()
   let prev = head
   for (const end of [...ends].sort((a, b) => a - b)) {
     const i = Math.round(end * barW)
     if (i - prev < 2 || i >= barW - 1) continue
-    gaps.add(i)
+    ticks.add(i)
     prev = i
   }
-  return gaps
+  return ticks
 }
 
 export function spinnerCells(t: number, palette: Palette): string {
