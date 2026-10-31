@@ -17,6 +17,12 @@ export type WorkItem = { do: string; size?: 's' | 'm' | 'l'; run?: string }
 /** A loop's Progress list: what is left in order, the item in progress first; what finished; and since when the top item has been on top. */
 export type Work = { items: WorkItem[]; finished: string[]; topSince: number }
 
+/** How a report or a task list changed the plan, beyond finishing items: how many it added, and how many it dropped unfinished. */
+export type PlanChange = { added: number; dropped: number }
+
+/** The bar put back on the share done, were the estimate right: from where to where, when, and the plan change that caused it, if one did. */
+export type Rebase = { at: number; from: number; to: number; change: PlanChange | null }
+
 /** One loop's countdown, the main turn's or a subagent run's, kept whole so every band draws the same fill. */
 export type EtaTurn = {
   /** When the loop started. */
@@ -52,6 +58,10 @@ export type EtaTurn = {
   nudged?: boolean
   /** The `lastReportRound` of the report a call last reminded Claude may be out of date. Absent on a turn kept from before it existed. */
   remindedRound?: number
+  /** A plan change the next look with an estimate puts the bar right for. Absent when there is none, and on a turn kept from before it existed. */
+  replan?: PlanChange
+  /** The bar's last jump back onto the share done. Absent before the first, and on a turn kept from before it existed. */
+  rebase?: Rebase
 }
 
 /** One tool call as a band's details list it; `agentId` marks a subagent's. */

@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  DRIFT,
   SEEDS,
   advanceFill,
   closingAt,
@@ -11,6 +12,7 @@ import {
   estimate,
   freshEta,
   isUsable,
+  itemEnds,
   learnCommand,
   learnItem,
   learnOpenTop,
@@ -24,12 +26,15 @@ import {
   sizedBasis,
   spreadOf,
   startFill,
+  taskChange,
   taskKey,
   tickEta,
   totalOf,
+  withReplan,
   type EtaInput,
 } from '../hooks/eta'
-import { capitalize, countdownLabel, etaLabels, etaRange, etaValue, fitLabel, isGrowing, shownMs } from '../hooks/frames'
+import { capitalize, countdownLabel, etaLabels, etaRange, etaValue, fitLabel, isGrowing, planNote, shownMs } from '../hooks/frames'
+import { planChange } from '../hooks/report'
 import type { CallRecord, Detail, StepRecord, Task, WorkItem } from '../types'
 
 const PACE = 10_000
@@ -154,6 +159,46 @@ test('a countdown label is the fullest that fits on the terminal, the whole one 
   expect(countdownLabel(est, false, true, 30)).toBe('~4m left')
   expect(countdownLabel(est, false, false, 30)).toBe('~4m left (3–6m)')
   expect(countdownLabel(est, true, true, 80)).toBe('~4m left (3–6m) ↑')
+})
+
+test('after a jump the label names the plan change, dropping it before the range on a narrow terminal, and a jump forward carries ↓', () => {
+  const est = { ms: 240_000, lowMs: 180_000, highMs: 360_000 }
+  const grown = { change: '+2 items', isDown: false }
+  expect(countdownLabel(est, true, false, 30, grown)).toBe('+2 items · ~4m left (3–6m) ↑')
+  expect(countdownLabel(est, true, true, 80, grown)).toBe('+2 items · ~4m left (3–6m) ↑')
+  expect(countdownLabel(est, true, true, 40, grown)).toBe('~4m left (3–6m) ↑')
+  expect(countdownLabel(est, false, true, 80, { change: null, isDown: true })).toBe('~4m left (3–6m) ↓')
+  expect(countdownLabel(est, true, true, 80, { change: null, isDown: true }), '↑ wins: the estimate grew').toBe('~4m left (3–6m) ↑')
+  expect(planNote({ added: 2, dropped: 0 }, 'item')).toBe('+2 items')
+  expect(planNote({ added: 0, dropped: 1 }, 'task')).toBe('−1 task')
+  expect(planNote({ added: 1, dropped: 1 }, 'item')).toBe('re-planned')
+  expect(planNote(null, 'item')).toBeNull()
+})
+
+test('a report changes the plan when it adds items or drops ones below the top; finishing items does not', () => {
+  const work = { items: [{ do: 'a' }, { do: 'b' }, { do: 'c' }], finished: [], topSince: 0 }
+  expect(planChange(null, { left: [{ do: 'a' }] }), 'a first list is the plan').toBeNull()
+  expect(planChange(work, { done: 1 })).toBeNull()
+  expect(planChange(work, { left: [{ do: 'b' }, { do: 'c' }] }), 'the top gone is taken as done').toBeNull()
+  expect(planChange(work, { left: [{ do: 'a' }, { do: 'b' }, { do: 'c' }, { do: 'd' }] })).toEqual({ added: 1, dropped: 0 })
+  expect(planChange(work, { left: [{ do: 'a' }] })).toEqual({ added: 0, dropped: 2 })
+  expect(planChange({ ...work, items: [] }, { left: [{ do: 'more' }] }), 'more work after all of it finished').toEqual({ added: 1, dropped: 0 })
+})
+
+test('a task list changes the plan when tasks are added or dropped undone; ticking or clearing done ones does not', () => {
+  const list: Task[] = [
+    { id: '1', subject: 'a', status: 'completed' },
+    { id: '2', subject: 'b', status: 'in_progress' },
+    { id: '3', subject: 'c', status: 'pending' },
+  ]
+  expect(taskChange([], list), 'a first list is the plan').toBeNull()
+  expect(taskChange(list, list.map(task => ({ ...task, status: 'completed' as const })))).toBeNull()
+  expect(taskChange(list, list.slice(1)), 'a done task cleared away').toBeNull()
+  expect(taskChange(list, [...list, { id: '4', subject: 'd', status: 'pending' }])).toEqual({ added: 1, dropped: 0 })
+  expect(taskChange(list, list.slice(0, 2))).toEqual({ added: 0, dropped: 1 })
+  const once = withReplan(freshEta(0), { added: 1, dropped: 0 })
+  expect(withReplan(once, { added: 2, dropped: 1 }).replan, 'changes before the next look add up').toEqual({ added: 3, dropped: 1 })
+  expect(withReplan(once, null)).toBe(once)
 })
 
 test('a command is keyed trimmed, its spaces collapsed, a leading cd dropped, cut to 200 characters', () => {
@@ -331,6 +376,52 @@ test('each look keeps the estimate, notes the first, moves the bar on, and marks
   const lost = tickEta(grown, out(null), NOW + 13_000)
   expect(lost.last).toBeNull()
   expect(lost.fill, 'with no estimate the bar holds').toBe(grown.fill)
+})
+
+test('a plan change puts the bar back on the share done, back or forward, and notes the jump', () => {
+  const out = (ms: number | null) => ({ estimate: ms === null ? null : { ms, lowMs: ms / 2, highMs: ms * 2 }, items: [], source: 'progress' as const })
+  const one = tickEta(freshEta(NOW), out(30_000), NOW + 30_000)
+  expect(one.fill).toBe(0.5)
+  const grown = tickEta(withReplan(one, { added: 3, dropped: 0 }), out(120_000), NOW + 31_000)
+  expect(Math.round((grown.fill ?? 0) * 1000), 'back to 31 s of 151 s').toBe(205)
+  expect(grown.rebase).toEqual({ at: NOW + 31_000, from: 0.5, to: grown.fill, change: { added: 3, dropped: 0 } })
+  expect('replan' in grown, 'taken').toBe(false)
+  const steady = tickEta(grown, out(119_000), NOW + 32_000)
+  expect(steady.rebase, 'no change, no drift: no jump').toEqual(grown.rebase)
+  const shrunk = tickEta(withReplan(steady, { added: 0, dropped: 2 }), out(10_000), NOW + 33_000)
+  expect(Math.round((shrunk.fill ?? 0) * 1000), 'forward to 33 s of 43 s').toBe(767)
+  expect(shrunk.rebase?.change).toEqual({ added: 0, dropped: 2 })
+})
+
+test('with no estimate a plan change waits for one; at the first estimate there is nothing to jump from', () => {
+  const out = (ms: number | null) => ({ estimate: ms === null ? null : { ms, lowMs: ms / 2, highMs: ms * 2 }, items: [], source: 'progress' as const })
+  const first = tickEta(withReplan(freshEta(NOW), { added: 1, dropped: 0 }), out(30_000), NOW + 30_000)
+  expect(first.rebase).toBeUndefined()
+  expect('replan' in first).toBe(false)
+  const lost = tickEta(withReplan(first, { added: 1, dropped: 0 }), out(null), NOW + 31_000)
+  expect(lost.replan).toEqual({ added: 1, dropped: 0 })
+  expect(lost.fill).toBe(first.fill)
+  const back = tickEta(lost, out(90_000), NOW + 32_000)
+  expect(back.rebase?.change).toEqual({ added: 1, dropped: 0 })
+})
+
+test(`with no plan change the bar jumps only once it drifts more than ${DRIFT * 100} points from the share done`, () => {
+  const out = (ms: number) => ({ estimate: { ms, lowMs: ms / 2, highMs: ms * 2 }, items: [], source: 'progress' as const })
+  const one = tickEta(freshEta(NOW), out(30_000), NOW + 30_000)
+  const near = tickEta(one, out(40_000), NOW + 31_000)
+  expect(near.rebase, '31 s of 71 s is 0.44: within the drift').toBeUndefined()
+  expect((near.fill ?? 0) > 0.5).toBe(true)
+  const far = tickEta(near, out(90_000), NOW + 32_000)
+  expect(Math.round((far.fill ?? 0) * 1000), 'put back on 32 s of 122 s').toBe(262)
+  expect(far.rebase?.change).toBeNull()
+})
+
+test("where items end lies past the fill, each in proportion to its estimate; one item or no fill has none", () => {
+  const eta = { ...freshEta(0), fill: 0.5, last: { ms: 100_000, lowMs: 0, highMs: 0 }, items: [{ key: 'a', ms: 20_000 }, { key: 'b', ms: 30_000 }, { key: 'c', ms: 40_000 }] }
+  expect(itemEnds(eta)).toEqual([0.6, 0.75])
+  expect(itemEnds({ ...eta, lastRaw: { ms: 200_000, lowMs: 0, highMs: 0 } }), 'laid out by the estimate before calibration').toEqual([0.55, 0.625])
+  expect(itemEnds({ ...eta, items: eta.items.slice(0, 1) })).toEqual([])
+  expect(itemEnds({ ...eta, fill: null })).toEqual([])
 })
 
 test('at the answer, the one item still listed is learned up to the closing round; with two left, a run item or no closing round, nothing is', () => {

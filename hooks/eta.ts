@@ -1,6 +1,6 @@
 // The countdown's arithmetic: from samples of how long items took, how long the work left will take, and how far the bar has come.
 
-import type { CallRecord, Detail, EtaPending, EtaTurn, SampleKind, Spread, StepRecord, Task, Work, WorkItem } from '../types'
+import type { CallRecord, Detail, EtaPending, EtaTurn, PlanChange, SampleKind, Spread, StepRecord, Task, Work, WorkItem } from '../types'
 import { shownMs } from './frames'
 
 export type Sizes = Record<SampleKind, number[]>
@@ -21,6 +21,8 @@ export const STALE_ROUNDS = 12
 export const STALE_OVERRUN = 2
 /** Where the bar waits until the turn ends. */
 export const FILL_CAP = 0.97
+/** How far the bar may drift from the share done before a look puts it back there, with no plan change to do it. */
+export const DRIFT = 0.1
 /** The most one tick moves the bar: a laptop waking from sleep does not leap it ahead. */
 export const MAX_TICK_MS = 5_000
 /** A command with fewer runs than this gets half to double its median as its range. */
@@ -93,13 +95,13 @@ export const correction = (actual: number, estimated: number) => (actual + PRIOR
 /** Whether an estimate is fit to show. */
 export const isUsable = (s: Spread) => [s.ms, s.lowMs, s.highMs].every(Number.isFinite) && s.ms > 0
 
-/** The bar at the first estimate: the share of the turn already done, were the estimate right. */
+/** The share of the turn already done, were the estimate right: where the bar starts, and where a plan change or a drift puts it back. */
 export function startFill(elapsedMs: number, remainingMs: number): number {
   const done = Math.max(0, elapsedMs)
   return Math.min(FILL_CAP, done / (done + remainingMs))
 }
 
-/** The bar one tick on, at the speed that reaches the end when the countdown does; it holds without an estimate and never goes back. */
+/** The bar one tick on, at the speed that reaches the end when the countdown does; it holds without an estimate, and a tick never moves it back. */
 export function advanceFill(fill: number, dtMs: number, remainingMs: number | null): number {
   if (remainingMs === null || !(remainingMs > 0)) return fill
   const dt = Math.max(0, Math.min(dtMs, MAX_TICK_MS))
@@ -163,6 +165,21 @@ export function runningSince(detail: Detail, work: Work | null): number | null {
 
 /** A task's key for its timing: its id and its text, since a TodoWrite list numbers its entries by position. */
 export const taskKey = (task: Task) => `${task.id}:${task.subject}`
+
+/** How a task list changed the plan, by the tasks' text: those added, and those dropped before they were done; null for a first list or no change. */
+export function taskChange(before: readonly Task[], after: readonly Task[]): PlanChange | null {
+  if (before.length === 0) return null
+  const added = after.filter(task => !before.some(b => b.subject === task.subject)).length
+  const dropped = before.filter(task => task.status !== 'completed' && !after.some(a => a.subject === task.subject)).length
+  return added + dropped === 0 ? null : { added, dropped }
+}
+
+/** A loop's countdown with one more plan change to put the bar right for, added to any the next look has not yet taken. */
+export function withReplan(eta: EtaTurn, change: PlanChange | null): EtaTurn {
+  if (change === null) return eta
+  const was = eta.replan ?? { added: 0, dropped: 0 }
+  return { ...eta, replan: { added: was.added + change.added, dropped: was.dropped + change.dropped } }
+}
 
 /** Which report an estimate was worked out from: a Progress list or a task list. */
 export type EtaSource = 'progress' | 'tasks'
@@ -322,7 +339,10 @@ export function learnCommand(eta: EtaTurn, command: string, ms: number): EtaTurn
 /** How long the label's `↑` shows after the estimate grows. */
 export const UP_MS = 5_000
 
-/** A loop's countdown after one more look: the estimate kept, the first one noted, the bar moved on, and the `↑` set when it grew. */
+/**
+ * A loop's countdown after one more look: the estimate kept, the first one noted, the bar moved on, and the `↑` set when it grew.
+ * After a plan change, or once it drifts more than `DRIFT` from the share done, the bar is put back on that share, forward or back.
+ */
 export function tickEta(eta: EtaTurn, out: EtaOutput, now: number): EtaTurn {
   const last = out.estimate
   const elapsed = now - eta.startedAt
@@ -331,9 +351,42 @@ export function tickEta(eta: EtaTurn, out: EtaOutput, now: number): EtaTurn {
     (last === null || out.source === null
       ? null
       : { atMs: Math.max(0, elapsed), ms: last.ms, lowMs: last.lowMs, highMs: last.highMs, source: out.source, ...(out.raw ? { raw: out.raw } : {}) })
-  const fill = last === null ? eta.fill : eta.fill === null ? startFill(elapsed, last.ms) : advanceFill(eta.fill, now - eta.lastTickAt, last.ms)
+  const share = last === null ? null : startFill(elapsed, last.ms)
+  const moved = last === null ? eta.fill : eta.fill === null ? share : advanceFill(eta.fill, now - eta.lastTickAt, last.ms)
+  const change = eta.replan ?? null
+  const from = eta.fill
+  const isRebase = from !== null && share !== null && moved !== null && (change !== null || Math.abs(moved - share) > DRIFT)
+  const fill = isRebase ? share : moved
   const shown = last === null ? null : shownMs(last.ms)
   const grew = shown !== null && eta.shownMs !== null && shown > eta.shownMs
   const lastRaw = out.raw === undefined ? last : out.raw
-  return { ...eta, last, lastRaw, items: out.items, first, fill, lastTickAt: now, shownMs: shown ?? eta.shownMs, upUntil: grew ? now + UP_MS : eta.upUntil }
+  const { replan, ...rest } = eta
+  return {
+    ...rest,
+    last,
+    lastRaw,
+    items: out.items,
+    first,
+    fill,
+    lastTickAt: now,
+    shownMs: shown ?? eta.shownMs,
+    upUntil: grew ? now + UP_MS : eta.upUntil,
+    // A plan change waits for an estimate to put the bar right by; the first estimate starts the bar on the share done anyway.
+    ...(replan !== undefined && last === null && from !== null ? { replan } : {}),
+    ...(isRebase ? { rebase: { at: now, from, to: share, change } } : {}),
+  }
+}
+
+/** Where the listed items end on the bar, past its fill: each one's share of the estimate laid over what is left to fill; none for one item. */
+export function itemEnds(eta: EtaTurn): number[] {
+  const total = (eta.lastRaw === undefined ? eta.last : eta.lastRaw)?.ms
+  const fill = eta.fill
+  if (fill === null || total === undefined || !(total > 0) || eta.items.length < 2) return []
+  const ends: number[] = []
+  let at = 0
+  for (const item of eta.items.slice(0, -1)) {
+    at += item.ms
+    ends.push(fill + (1 - fill) * Math.min(1, at / total))
+  }
+  return ends
 }

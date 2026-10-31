@@ -367,7 +367,7 @@ test('eta: off keeps the share done and draws no countdown', { options: { eta: '
   expect(has(shown, /left/)).toBe(false)
 })
 
-test('a planned bar follows the countdown and never moves back when tasks are added', async ($, on) => {
+test('a planned bar moves back when tasks are added, names them, and shows the span it gave back draining away', async ($, on) => {
   const { clock } = await pacedTurn($, on)
   await $.tool.call({ tool: 'TodoWrite', todos })
   await clock.advance(1_000)
@@ -376,7 +376,28 @@ test('a planned bar follows the countdown and never moves back when tasks are ad
   const more = ['Document', 'Release', 'Announce'].map(content => ({ content, status: 'pending' as const, activeForm: content }))
   await $.tool.call({ tool: 'TodoWrite', todos: [...todos, ...more] })
   await clock.advance(1_000)
-  expect((await fillWidth($)) >= before).toBe(true)
+  expect(await fillWidth($)).toBeLessThan(before)
+  const ui = await mountBand($, 'desktop', true, 80, {})
+  const bar = String((await ui.findAll({ type: 'Svg' })).find(svg => /^Progress/.test(String(svg.props.alt)))?.props.source)
+  await ui.unmount()
+  expect(bar, 'the span given back, in amber, draining').toMatch(/fill="#d8a64a"[^>]*><animate attributeName="width"/)
+  expect(has(await seen($, 'desktop'), /\+3 tasks · ~\d+m left/)).toBe(true)
+  await clock.advance(6_000)
+  expect(has(await seen($, 'desktop'), /\+3 tasks/), 'the note goes with the ↑').toBe(false)
+})
+
+test('a report that adds items moves the terminal bar back and leaves a gap in the track where each item ends', async ($, on) => {
+  const { clock } = await pacedTurn($, on)
+  await report($, { left: [MS.m, MS.s] })
+  await clock.advance(1_000)
+  const barOf = (shown: { bars: string[] }) => shown.bars.find(cells => cells.length > 1) ?? ''
+  const track = barOf(await seen($, 'terminal'))
+  expect(track, 'one gap, between the two items').toMatch(/─ ─/)
+  await report($, { left: [MS.m, MS.s, MS.l] })
+  await clock.advance(1_000)
+  const shown = await seen($, 'terminal')
+  expect(has(shown, /\+1 item · /)).toBe(true)
+  expect((barOf(shown).match(/─ (?=─)/g) ?? []).length, 'two gaps, among three items').toBe(2)
 })
 
 test('on a narrow terminal the label shortens so the bar keeps its 20 cells', async ($, on) => {

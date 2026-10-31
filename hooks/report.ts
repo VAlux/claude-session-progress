@@ -2,7 +2,7 @@
 
 import type { ToolSpec } from 'claude-code'
 
-import type { Task, Work, WorkItem } from '../types'
+import type { PlanChange, Task, Work, WorkItem } from '../types'
 
 /** The tool's short name, and the name the model calls it by. */
 export const PROGRESS_NAME = 'progress'
@@ -127,6 +127,16 @@ export function applyReport(work: Work | null, report: Report, now: number): { w
     work: { items: left, finished: isGone ? [...work.finished, top.do].slice(-MAX_FINISHED) : work.finished, topSince: isStill ? work.topSince : now },
     finished: isGone ? { item: top, since: work.topSince } : null,
   }
+}
+
+/** How a `left` report changed the plan: the items it added, and the ones below the top it dropped (a top item gone is taken as done); null for none. */
+export function planChange(before: Work | null, report: Report): PlanChange | null {
+  if (before === null || !('left' in report)) return null
+  const was = before.items.map(item => item.do)
+  const now = report.left.map(item => item.do)
+  const added = now.filter(text => !was.includes(text)).length
+  const dropped = was.slice(1).filter(text => !now.includes(text)).length
+  return added + dropped === 0 ? null : { added, dropped }
 }
 
 /** A work list as the band's step rows: what finished, the item in progress, the rest. */

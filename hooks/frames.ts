@@ -42,6 +42,30 @@ export type BarOptions = {
   /** Text drawn in the bar's own last cells (a percentage, a clock), so it can never wrap away from it. */
   label?: string
   labelColor?: number
+  /** Where items end past the fill, in [0, 1]: a gap in the track at each. */
+  ends?: readonly number[]
+  /** The span the bar just gave back (`from` above it) or just gained (`from` below it), drawn in `color` at strength `k` in [0, 1]. */
+  change?: ChangeSpan | null
+}
+
+export type ChangeSpan = { from: number; color: number; k: number }
+
+/** How long a jump of the bar back onto the share done shows, and the part of it a span given back holds before it drains. */
+export const CHANGE_MS = 1_200
+const HOLD = 0.25
+
+/**
+ * A jump of the bar `ageMs` after it, as the span it draws: one given back holds in amber, then drains into the fill;
+ * one gained glows, then fades. Null once it is over.
+ */
+export function changeSpan(jump: { from: number; to: number }, ageMs: number, palette: Palette): ChangeSpan | null {
+  const k = Math.max(0, ageMs) / CHANGE_MS
+  if (k >= 1 || jump.from === jump.to) return null
+  if (jump.from > jump.to) {
+    const d = Math.max(0, (k - HOLD) / (1 - HOLD))
+    return { from: jump.to + (jump.from - jump.to) * (1 - d) ** 3, color: WARN.base, k: 0.85 }
+  }
+  return { from: jump.from, color: palette.glow, k: 1 - k }
 }
 
 export function pctLabel(progress: number): string {
@@ -54,7 +78,7 @@ export function pctLabel(progress: number): string {
  * driving the shimmer.
  */
 export function barCells(width: number, progress: number | null, t: number, palette: Palette, options: BarOptions = {}): string {
-  const { shimmer = true, label = '', labelColor = palette.base } = options
+  const { shimmer = true, label = '', labelColor = palette.base, ends = [], change = null } = options
   const w = Math.max(1, Math.min(512, Math.floor(width)))
   const words = new Uint32Array(w * 3)
   const put = (i: number, glyph: number, color: number) => {
@@ -87,19 +111,38 @@ export function barCells(width: number, progress: number | null, t: number, pale
 
   const exact = Math.max(0, Math.min(1, progress)) * barW
   const full = Math.floor(exact)
+  const head = exact - full >= 0.5 ? full + 1 : full
   const shimmerAt = ((t % 2600) / 2600) * (full + 16) - 8
+  const changeAt = change === null ? exact : Math.max(0, Math.min(1, change.from)) * barW
+  const gaps = gapCells(ends, barW, head)
   for (let i = 0; i < barW; i++) {
     if (i < full) {
       const gradient = lerp(palette.dim, palette.base, full <= 1 ? 1 : 0.35 + (0.65 * i) / (full - 1))
       const glow = shimmer ? Math.exp(-((i - shimmerAt) ** 2) / 10) : 0
-      put(i, FILLED, lerp(gradient, palette.glow, glow * 0.85))
+      const color = lerp(gradient, palette.glow, glow * 0.85)
+      put(i, FILLED, change !== null && i >= Math.floor(changeAt) ? lerp(color, change.color, change.k) : color)
     } else if (i === full && exact - full >= 0.5) {
       put(i, HALF, palette.base)
+    } else if (change !== null && i < Math.round(changeAt)) {
+      put(i, FILLED, lerp(TRACK, change.color, change.k))
     } else {
-      put(i, EMPTY, TRACK)
+      put(i, gaps.has(i) ? 0x20 : EMPTY, TRACK)
     }
   }
   return encode(words)
+}
+
+/** The track cells left blank where items end: past the bar's head and short of its end, at least two cells apart. */
+function gapCells(ends: readonly number[], barW: number, head: number): Set<number> {
+  const gaps = new Set<number>()
+  let prev = head
+  for (const end of [...ends].sort((a, b) => a - b)) {
+    const i = Math.round(end * barW)
+    if (i - prev < 2 || i >= barW - 1) continue
+    gaps.add(i)
+    prev = i
+  }
+  return gaps
 }
 
 export function spinnerCells(t: number, palette: Palette): string {
@@ -120,9 +163,56 @@ export const hex = (color: number) => `#${(color & 0xffffff).toString(16).padSta
 const SVG_W = 1000
 const SVG_H = 6
 const SVG_TRACK = '<rect width="1000" height="6" rx="3" fill="#8c8c8c" fill-opacity="0.3"/>'
+const SVG_GAP = 8
+
+export type SvgBarOptions = {
+  shimmer?: boolean
+  /** Where items end past the fill, in [0, 1]: a gap in the track at each. */
+  ends?: readonly number[]
+  /** The bar's jump back onto the share done, `ageMs` ago: the span given back drains away, one gained glows and fades. */
+  jump?: { from: number; to: number; ageMs: number } | null
+}
+
+/** The track in pieces, split where items end past the fill: each piece short of the next gap. */
+function trackSvg(fill: number, ends: readonly number[]): string {
+  const cuts: number[] = []
+  for (const end of [...ends].sort((a, b) => a - b)) {
+    const x = Math.round(end * SVG_W)
+    if (x - (cuts[cuts.length - 1] ?? fill) < 20 || x > SVG_W - 20) continue
+    cuts.push(x)
+  }
+  if (cuts.length === 0) return SVG_TRACK
+  const edges = [0, ...cuts, SVG_W]
+  return edges
+    .slice(0, -1)
+    .map((x, i) => {
+      const to = edges[i + 1]! - (i < cuts.length ? SVG_GAP : 0)
+      return `<rect x="${x}" width="${to - x}" height="6" rx="3" fill="#8c8c8c" fill-opacity="0.3"/>`
+    })
+    .join('')
+}
+
+/** The span a jump gave back or gained, animated from where it stands `ageMs` in: a negative `begin` joins it mid-way after a redraw. */
+function jumpSvg(jump: NonNullable<SvgBarOptions['jump']>, fill: number, palette: Palette): string {
+  if (jump.ageMs >= CHANGE_MS || jump.from === jump.to) return ''
+  const from = Math.round(Math.max(0, Math.min(1, jump.from)) * SVG_W)
+  if (from === fill) return ''
+  if (from > fill) {
+    const hold = HOLD * CHANGE_MS
+    return (
+      `<rect x="${fill}" width="${from - fill}" height="6" rx="3" fill="${hex(WARN.base)}" fill-opacity="0.85">` +
+      `<animate attributeName="width" from="${from - fill}" to="0" begin="${Math.round(hold - jump.ageMs)}ms" dur="${CHANGE_MS - hold}ms" ` +
+      'calcMode="spline" keyTimes="0;1" keySplines="0.33 0 0.67 1" fill="freeze"/></rect>'
+    )
+  }
+  return (
+    `<rect x="${from}" width="${fill - from}" height="6" fill="${hex(palette.glow)}" fill-opacity="0">` +
+    `<animate attributeName="fill-opacity" from="0.9" to="0" begin="${-Math.round(jump.ageMs)}ms" dur="${CHANGE_MS}ms" fill="freeze"/></rect>`
+  )
+}
 
 /** The bar as SVG, stretched to its row: `progress` in [0, 1], or null for a comet sweeping the track. */
-export function barSvg(progress: number | null, palette: Palette, options: { shimmer?: boolean } = {}): { source: string; isAnimated: boolean } {
+export function barSvg(progress: number | null, palette: Palette, options: SvgBarOptions = {}): { source: string; isAnimated: boolean } {
   const open = `<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_W}" height="${SVG_H}" viewBox="0 0 ${SVG_W} ${SVG_H}" preserveAspectRatio="none">`
   if (progress === null) {
     const tail = 200
@@ -138,14 +228,16 @@ export function barSvg(progress: number | null, palette: Palette, options: { shi
     `<defs><linearGradient id="f"><stop offset="0" stop-color="${hex(palette.dim)}"/><stop offset="1" stop-color="${hex(palette.base)}"/></linearGradient>` +
     `<clipPath id="k"><rect width="${fill}" height="6" rx="3"/></clipPath></defs>` +
     `<rect width="${fill}" height="6" rx="3" fill="url(#f)"/>`
-  const isAnimated = options.shimmer === true && fill > 0
-  const shimmer = isAnimated
+  const jump = options.jump == null ? '' : jumpSvg(options.jump, fill, palette)
+  const isShimmering = options.shimmer === true && fill > 0
+  const isAnimated = isShimmering || jump !== ''
+  const shimmer = isShimmering
     ? `<defs><linearGradient id="s"><stop offset="0" stop-color="${hex(palette.glow)}" stop-opacity="0"/>` +
       `<stop offset="0.5" stop-color="${hex(palette.glow)}" stop-opacity="0.85"/><stop offset="1" stop-color="${hex(palette.glow)}" stop-opacity="0"/></linearGradient></defs>` +
       `<g clip-path="url(#k)"><rect x="-120" width="120" height="6" fill="url(#s)">` +
       `<animate attributeName="x" from="-120" to="${fill}" dur="2.6s" repeatCount="indefinite"/></rect></g>`
     : ''
-  return { source: `${open}${SVG_TRACK}${bar}${shimmer}</svg>`, isAnimated }
+  return { source: `${open}${trackSvg(fill, options.ends ?? [])}${bar}${shimmer}${jump}</svg>`, isAnimated }
 }
 
 /** The desktop's live spinner: an arc turning on its own. */
@@ -210,11 +302,33 @@ export function fitLabel(labels: readonly string[], width: number): string {
 /** Whether a countdown grew a moment ago, so its label shows `↑`. */
 export const isGrowing = (upUntil: number | null | undefined, now: number) => upUntil !== null && upUntil !== undefined && now < upUntil
 
-/** A countdown's label on a bar of `width` cells, `↑` after it while it has just grown: the fullest that fits on the terminal, the whole one on the desktop. */
-export function countdownLabel(est: { ms: number; lowMs: number; highMs: number } | null, isUp: boolean, isTerminal: boolean, width: number): string {
+/** What a countdown's label adds for a moment after the bar jumped: the plan change ahead of it, and `↓` when the bar moved forward. */
+export type LabelNote = { change: string | null; isDown: boolean }
+
+/**
+ * A countdown's label on a bar of `width` cells, `↑` after it while it has just grown (`↓` after a jump forward), a plan change ahead of it:
+ * the fullest that fits on the terminal, dropping the plan change before the range; the whole one on the desktop.
+ */
+export function countdownLabel(
+  est: { ms: number; lowMs: number; highMs: number } | null,
+  isUp: boolean,
+  isTerminal: boolean,
+  width: number,
+  note: LabelNote | null = null,
+): string {
   if (est === null) return ''
-  const labels = etaLabels(est).map(text => (isUp ? `${text} ↑` : text))
+  const arrow = isUp ? ' ↑' : note?.isDown ? ' ↓' : ''
+  const plain = etaLabels(est).map(text => `${text}${arrow}`)
+  const change = note?.change ?? null
+  const labels = change === null ? plain : [...plain.slice(0, -1).map(text => `${change} · ${text}`), ...plain]
   return isTerminal ? fitLabel(labels, width) : labels[0]!
+}
+
+/** A plan change as the label names it: `+2 items`, `−1 task`, or `re-planned` for one that both added and dropped. */
+export function planNote(change: { added: number; dropped: number } | null, unit: 'item' | 'task'): string | null {
+  if (change === null || change.added + change.dropped === 0) return null
+  if (change.added > 0 && change.dropped > 0) return 're-planned'
+  return change.added > 0 ? `+${plural(change.added, unit)}` : `−${plural(change.dropped, unit)}`
 }
 
 /** The text with its first letter in capitals. */

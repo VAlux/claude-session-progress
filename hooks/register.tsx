@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Color, Elements, EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AgentRun, Detail, EtaPending, EtaTurn, Live, Spread, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
+import type { AgentRun, Detail, EtaPending, EtaTurn, Live, PlanChange, Spread, StatKind, Summary, Task, TaskStatus, Totals } from '../types'
 import {
   ICONS,
   changedFiles,
@@ -29,6 +29,8 @@ import {
   barCells,
   barSvg,
   capitalize,
+  CHANGE_MS,
+  changeSpan,
   countdownLabel,
   etaRange,
   etaValue,
@@ -36,6 +38,7 @@ import {
   isGrowing,
   MUTED,
   pctLabel,
+  planNote,
   duration,
   glyphCells,
   plural,
@@ -45,6 +48,7 @@ import {
   stepCost,
   tokens,
   usd,
+  type LabelNote,
   type Palette,
 } from './frames'
 import {
@@ -60,13 +64,17 @@ import {
   learnOpenTop,
   learnTasks,
   paceOf,
+  itemEnds,
   runningSince,
+  taskChange,
   tickEta,
+  UP_MS,
+  withReplan,
   type EtaInput,
 } from './eta'
 import { calibrated } from './calibrate'
 import { flushHistory, loadHistory, logRowOf, seeded, type History, type LogRow, type Store } from './history'
-import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, nudgeLine, parseReport, staleLine, workTasks } from './report'
+import { PROGRESS_SPEC, PROGRESS_TOOL, applyReport, etaLine, nudgeLine, parseReport, planChange, staleLine, workTasks } from './report'
 import { shellWrites } from './shell'
 
 const live = atom({ plugin: 'session-progress', key: 'live' } as const, null)
@@ -141,7 +149,9 @@ function taskListLine(tools: readonly string[]): string | null {
 
 type Dollar = EngineInterface
 
-type BarLook = { shimmer: boolean; label: string; labelColor: number }
+/** `ends`: where items end past the fill. `jump`: the bar's last jump back onto the share done, `ageMs` ago, while it still shows. */
+type BarLook = { shimmer: boolean; label: string; labelColor: number; ends?: readonly number[]; jump?: Jump | null }
+type Jump = { from: number; to: number; ageMs: number }
 
 /** What draws the band's spinner, marks and bar on one surface; the rows around them are the same on both. */
 type Marks = {
@@ -158,8 +168,13 @@ function terminalMarks({ Raster }: Elements['terminal'], width: number): Marks {
     rowWidth: width,
     spinner: (key, palette, t) => <Raster key={key} columns={1} rows={1} cells={spinnerCells(t, palette)} />,
     mark: (key, glyph, palette) => <Raster key={key} columns={1} rows={1} cells={glyphCells(glyph, palette.base)} />,
-    bar: (key, columns, progress, t, palette, look) => (
-      <Raster key={key} columns={columns} rows={1} cells={barCells(columns, progress, t, palette, look)} />
+    bar: (key, columns, progress, t, palette, { jump, ...look }) => (
+      <Raster
+        key={key}
+        columns={columns}
+        rows={1}
+        cells={barCells(columns, progress, t, palette, { ...look, change: jump == null ? null : changeSpan(jump, jump.ageMs, palette) })}
+      />
     ),
   }
 }
@@ -174,8 +189,8 @@ function desktopMarks({ Box, Text, Svg }: Elements['desktop']): Marks {
         {glyph}
       </Text>
     ),
-    bar: (key, _columns, progress, _t, palette, { shimmer, label, labelColor }) => {
-      const { source, isAnimated } = barSvg(progress, palette, { shimmer })
+    bar: (key, _columns, progress, _t, palette, { shimmer, label, labelColor, ends, jump }) => {
+      const { source, isAnimated } = barSvg(progress, palette, { shimmer, ends, jump })
       const pct = label.trim()
       return (
         <Box flexDirection="row" flexGrow={1} alignItems="center" gap={1}>
@@ -203,6 +218,27 @@ const scene = {
   isFinishing: false,
   finishFrom: 0,
   finishFrames: 0,
+  // Where items end past the fill, and the bar's jump the frames animate: from where to where, since when (Date.now()).
+  ends: [] as readonly number[],
+  jump: null as { from: number; to: number; t0: number } | null,
+  // The countdown's last jump the band has taken in, by when it came.
+  rebaseAt: null as number | null,
+}
+
+/** The jump the frame loop is animating, `t` (Date.now()) into it. */
+const sceneJump = (t: number): Jump | null => (scene.jump === null ? null : { from: scene.jump.from, to: scene.jump.to, ageMs: t - scene.jump.t0 })
+
+/** The countdown's last jump while it still shows, `now` (the engine's clock) into it. */
+function jumpOf(eta: EtaTurn | null | undefined, now: number): Jump | null {
+  const r = eta?.rebase
+  return r === undefined || now - r.at >= CHANGE_MS ? null : { from: r.from, to: r.to, ageMs: now - r.at }
+}
+
+/** What the countdown's label adds for a moment after the bar jumped: the plan change that moved it, and `↓` when it moved forward. */
+function noteOf(eta: EtaTurn | null | undefined, now: number): LabelNote | null {
+  const r = eta?.rebase
+  if (eta == null || r === undefined || now - r.at >= UP_MS) return null
+  return { change: planNote(r.change, eta.work !== null ? 'item' : 'task'), isDown: r.to > r.from }
 }
 let frameTimer: Timer | null = null
 let tickTimer: Timer | null = null
@@ -381,7 +417,7 @@ async function takeReport($: Dollar, agentId: string | undefined, input: Record<
     const { work, finished } = applyReport(eta.work, report, now)
     const added = 'left' in report ? report.left.flatMap(item => (item.run === undefined ? [] : [commandKey(item.run)])) : []
     const runs = [...new Set([...eta.runs, ...added])]
-    const next = { ...eta, work, runs, lastReportRound: rounds }
+    const next = withReplan({ ...eta, work, runs, lastReportRound: rounds }, planChange(eta.work, report))
     return finished === null ? next : learnItem(next, finished, now, paceOf(detail, runs), history.sizes)
   }
   if (agentId !== undefined) {
@@ -471,7 +507,10 @@ function paint($: Dollar) {
   const progress = scene.target === null ? null : scene.shown
   const label = scene.showPct ? pctLabel(scene.shown) : scene.label
   const labelColor = scene.showPct ? scene.palette.base : scene.labelColor
-  const cells = barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor })
+  const jump = sceneJump(t)
+  const change = jump === null ? null : changeSpan(jump, jump.ageMs, scene.palette)
+  if (change === null) scene.jump = null
+  const cells = barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor, ends: scene.isFinishing ? [] : scene.ends, change })
   $.ui.blit({ requestId: scene.requestId, key: BAR_KEY, cells }).catch(skipFrame)
   if (!scene.isFinishing) {
     $.ui.blit({ requestId: scene.requestId, key: SPINNER_KEY, cells: spinnerCells(t, scene.palette) }).catch(skipFrame)
@@ -790,13 +829,18 @@ export const register: Register = (on, options) => {
           },
     )
     if (agentId !== undefined) {
-      await updateAgent($, agentId, now, run => ({
-        ...run,
-        errors: failed ? run.errors + 1 : run.errors,
-        running: run.running.filter(r => r.id !== e.tool_use_id),
-        detail: ranInto(detailOf(run)),
-        tasks: !failed && PLAN_TOOLS.has(e.tool) ? applyPlanTool(run.tasks, input, ran.result) : run.tasks,
-      }))
+      await updateAgent($, agentId, now, run => {
+        const list = !failed && PLAN_TOOLS.has(e.tool) ? applyPlanTool(run.tasks, input, ran.result) : run.tasks
+        return {
+          ...run,
+          errors: failed ? run.errors + 1 : run.errors,
+          running: run.running.filter(r => r.id !== e.tool_use_id),
+          detail: ranInto(detailOf(run)),
+          tasks: list,
+          // A task list's change moves the countdown only while no Progress list leads it.
+          ...(run.eta === undefined || run.eta.work !== null ? {} : { eta: withReplan(run.eta, taskChange(run.tasks, list)) }),
+        }
+      })
     }
     if (startedId !== null) {
       await updateAgent($, startedId, now, run => ({
@@ -817,7 +861,16 @@ export const register: Register = (on, options) => {
     if (!isLive) return ran
 
     if (!failed && tracksPlanTool(e.tool, isSub)) {
-      await update($, tasks, list => applyPlanTool(list, input, ran.result))
+      let change: PlanChange | null = null
+      await update($, tasks, list => {
+        const after = applyPlanTool(list, input, ran.result)
+        change = taskChange(list, after)
+        return after
+      })
+      if (config.eta && change !== null) {
+        const changed = change
+        await update($, etaTurn, eta => (eta === null || eta.work !== null ? eta : withReplan(eta, changed)))
+      }
       await markReport($, undefined, ended)
     }
     if (!isSub && ran.deny === undefined) {
@@ -907,6 +960,8 @@ export const register: Register = (on, options) => {
         scene.finishFrom = scene.shown
         scene.finishFrames = 0
         scene.isFinishing = true
+        scene.jump = null
+        scene.ends = []
         startFrames($)
       } else {
         stopFrames()
@@ -1081,15 +1136,19 @@ export const register: Register = (on, options) => {
       const doneCount = list.filter(task => task.status === 'completed').length
       const barWidth = Math.max(12, width - BAR_SLACK)
       const isUp = !isDone && isGrowing(runEta?.upUntil, now)
+      const note = isDone ? null : noteOf(runEta, now)
       // Running with the countdown on, the label counts down; finished, or without it, it is the share done.
       // A fill paced by time is no share, so with the countdown on only an answer names one.
       const label =
         config.eta && !isDone
-          ? countdownLabel(runEta?.last ?? null, isUp, isTerminal, barWidth)
+          ? countdownLabel(runEta?.last ?? null, isUp, isTerminal, barWidth, note)
           : progress === null || (config.eta && run.reason !== 'answer')
             ? ''
             : pctLabel(progress)
-      const labelColor = label === '' ? MUTED : isUp ? WARN.base : palette.base
+      const labelColor = label === '' ? MUTED : isUp ? WARN.base : note?.isDown ? DONE.base : palette.base
+      // A subagent's bar has no frame loop: its jump steps on with each redraw.
+      const ends = isDone || runEta === undefined ? [] : itemEnds(runEta)
+      const jump = isDone ? null : jumpOf(runEta, now)
       const detail = detailOf(run)
       const stats = [
         stat('tools', plural(run.toolCalls, 'tool call')),
@@ -1126,7 +1185,7 @@ export const register: Register = (on, options) => {
           </Text>
         </Box>,
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
-          {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor })}
+          {marks.bar(AGENT_BAR_KEY, barWidth, progress, t, palette, { shimmer: !isDone, label, labelColor, ends, jump })}
         </Box>,
         statsRow('stats', stats),
       ]
@@ -1179,9 +1238,11 @@ export const register: Register = (on, options) => {
       // With the countdown on, the bar follows its fill; without it, the share of the task list done.
       const progress = config.eta ? (eta?.fill ?? null) : planProgress(taskList)
       const isUp = isGrowing(eta?.upUntil, now)
+      const note = noteOf(eta, now)
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
-      const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth)
-      const labelColor = label === '' ? MUTED : isUp ? WARN.base : ACCENT.base
+      const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth, note)
+      const labelColor = label === '' ? MUTED : isUp ? WARN.base : note?.isDown ? DONE.base : ACCENT.base
+      const ends = eta === null ? [] : itemEnds(eta)
       // A last live draw can land after the turn ended: it must not repaint the finish orange.
       if (isTerminal && !scene.isFinishing) {
         scene.target = progress
@@ -1189,7 +1250,18 @@ export const register: Register = (on, options) => {
         scene.showPct = !config.eta && progress !== null
         scene.label = label
         scene.labelColor = labelColor
+        scene.ends = ends
+        // A jump not yet taken in: given back, the bar drops at once and the span drains after it; gained, the bar eases up and the span glows.
+        const rebase = eta?.rebase
+        if (rebase !== undefined && rebase.at !== scene.rebaseAt) {
+          scene.rebaseAt = rebase.at
+          if (progress !== null && now - rebase.at < CHANGE_MS) {
+            scene.jump = { from: scene.shown, to: progress, t0: t - (now - rebase.at) }
+            if (progress < scene.shown) scene.shown = progress
+          }
+        }
       }
+      const jump = isTerminal ? sceneJump(t) : jumpOf(eta, now)
       if (isTerminal) scene.barWidth = barWidth
 
       const work = eta?.work ?? null
@@ -1240,7 +1312,7 @@ export const register: Register = (on, options) => {
         </Box>,
         // A fixed width, as the head row has: in a band laid out narrower than bodyColumns the bar would be squeezed and its last cells wrap.
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
-          {marks.bar(BAR_KEY, barWidth, progress === null ? null : isTerminal ? scene.shown : progress, t, ACCENT, { shimmer: true, label, labelColor })}
+          {marks.bar(BAR_KEY, barWidth, progress === null ? null : isTerminal ? scene.shown : progress, t, ACCENT, { shimmer: true, label, labelColor, ends, jump })}
         </Box>,
         statsRow('stats', stats),
       ]
