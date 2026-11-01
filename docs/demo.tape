@@ -30,7 +30,7 @@ Set TypingSpeed 35ms
 Hide
 Type "unset $(env | cut -d= -f1 | grep -E '^CLAUDE')"
 Enter
-Type `clear && claude --model sonnet --append-system-prompt "This is a short screen-recorded demo. Do not mention memory tools, knowledge bases, or anything this session lacks. Run each shell command as its own plain python3 call in the current directory: no cd, no pipes, no ;, && or 2>&1." --setting-sources project --strict-mcp-config --plugin-dir $SESSION_PROGRESS_DIR --permission-mode dontAsk --allowedTools Read Write Edit Glob Grep TodoWrite TaskCreate TaskUpdate TaskList TaskGet ToolSearch 'Bash(python3 *)'`
+Type `clear && claude --model sonnet --append-system-prompt "This is a short screen-recorded demo. Do not mention memory tools, knowledge bases, or anything this session lacks. Run each shell command as its own plain python3 call in the current directory: no cd, no pipes, no ;, && or 2>&1." --setting-sources project --strict-mcp-config --plugin-dir $SESSION_PROGRESS_DIR --permission-mode dontAsk --allowedTools Read Write Edit Glob Grep TodoWrite TaskCreate TaskUpdate TaskList TaskGet ToolSearch Agent 'Bash(python3 *)'`
 Enter
 Sleep 7s
 Show
@@ -78,3 +78,13 @@ Enter
 Sleep 50s
 Screenshot end.png
 Sleep 8s
+
+# Turn 3: Claude hands the review to three subagents, which run in the background,
+# and waits. 8 s in, the band counts them done out of started, fills by that share
+# and labels it with the longest countdown, through Claude's short turns between answers.
+Type "Use three general-purpose subagents in parallel: one writes test_edge.py with ten edge-case tests and runs it; one writes test_cli.py running the CLI with every option and runs it; one writes USAGE.md with an example of every option, running each to show its real output. Tell each to run only plain python3 commands in this folder. Then sum up what they found in three lines."
+Sleep 600ms
+Enter
+Sleep 18s
+Screenshot wait.png
+Sleep 60s

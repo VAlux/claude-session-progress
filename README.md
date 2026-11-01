@@ -8,7 +8,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Surfaces: terminal, desktop](https://img.shields.io/badge/surfaces-terminal%20%7C%20desktop-5c5c5c)](#good-to-know)
 
-<img src="docs/demo.gif" alt="session-progress following a six-step plan in Claude Code, then showing its details, the cost and the session total" width="900">
+<img src="docs/demo.gif" alt="session-progress following a six-step plan in Claude Code, then showing its details, the cost and the session total, then counting three background subagents done as Claude waits on them" width="900">
 
 </div>
 
