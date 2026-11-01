@@ -56,17 +56,22 @@ async function round($: Engine, index: number, agentId?: string) {
   }
 }
 
-/** The main loop's Agent call and the spawn it makes: left running when it is a foreground one; a background one answers with its id. */
+/**
+ * The main loop's Agent call and the spawn it makes: left running when it is a foreground one; a background one answers with its id.
+ * The subagent's loop then starts its own turn, as the engine's does.
+ */
 async function dispatch($: Engine, clock: Clock, n: number, isBackground = false) {
-  const spawn = () =>
-    $.agent.spawn({
+  const spawn = async () => {
+    const started = (await $.agent.spawn({
       tool_use_id: `call-${n}`,
       prompt: 'Do it.',
       description: `Task ${n}`,
       subagentType: 'general-purpose',
       provider: { plugin: 'engine', tier: 'core' },
       parentModel: 'claude-opus-5-5',
-    } as never)
+    } as never)) as { agentId?: string }
+    await $.turn.start({ text: 'Do it.', turnId: `${started.agentId}-turn`, agentId: started.agentId } as never)
+  }
   if (isBackground) await spawn()
   const call = $.tool.call({
     tool: 'Agent',
@@ -211,4 +216,79 @@ test('without the countdown, a wait still fills by subagents done and names no t
   const shown = await seen($, 'desktop')
   expect(shown.fill).toBe(500)
   expect(has(shown, /left/)).toBe(false)
+})
+
+/** A quick main turn that sends `n` subagents to the background and ends at once, as Claude Code's Agent calls do by default. */
+async function quickFanOut($: Engine, on: On, n: number) {
+  engineBottom(on)
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.turn.start({ text: 'fan out', turnId: 't1' })
+  await round($, 0)
+  for (let i = 1; i <= n; i++) await dispatch($, clock, i, true)
+  await clock.advance(3_000)
+  await $.turn.complete(done('t1', 3_000))
+  return { clock }
+}
+
+test('a quick turn that hands off to two or more background subagents shows the wait 8 s in, as a plan of two does', async ($, on) => {
+  const { clock } = await quickFanOut($, on, 3)
+  await clock.advance(2_000)
+  expect(has(await seen($, 'terminal', false), /Waiting for/), 'not before 8 s').toBe(false)
+  await clock.advance(4_000)
+  const shown = await seen($, 'terminal', false)
+  expect(has(shown, /Waiting for 3 subagents/)).toBe(true)
+  expect(has(shown, /0\/3 subagents/)).toBe(true)
+})
+
+test("the wait carries on through Claude's short turns between subagents' answers", async ($, on) => {
+  const { clock } = await quickFanOut($, on, 3)
+  await clock.advance(20_000)
+  await $.turn.complete(done('a1', 22_000, 'a1'))
+  // Claude Code tells Claude the subagent answered: a short turn of its own.
+  await $.turn.start({ text: 'Agent "Task 1" finished', turnId: 't2' })
+  await round($, 0, undefined)
+  await clock.advance(2_000)
+  expect(has(await seen($, 'terminal', true), /1\/3 subagents/), 'during that turn').toBe(true)
+  await $.turn.complete(done('t2', 2_000))
+  await clock.advance(1_000)
+  const shown = await seen($, 'desktop', false)
+  expect(has(shown, /Waiting for 2 subagents/)).toBe(true)
+  expect(has(shown, /1\/3 subagents/)).toBe(true)
+  expect(shown.fill).toBe(333)
+})
+
+test("a quick turn's wait leaves no band once every subagent has answered", async ($, on) => {
+  const { clock } = await quickFanOut($, on, 2)
+  await clock.advance(20_000)
+  await $.turn.complete(done('a1', 22_000, 'a1'))
+  await $.turn.complete(done('a2', 23_000, 'a2'))
+  await clock.advance(1_000)
+  expect(has(await seen($, 'terminal', false), /Waiting for|Task complete/)).toBe(false)
+})
+
+test('a quick hand-off to one background subagent shows the wait only 20 s in', async ($, on) => {
+  const { clock } = await quickFanOut($, on, 1)
+  await clock.advance(12_000)
+  expect(has(await seen($, 'terminal', false), /Waiting for/), 'not at 15 s').toBe(false)
+  await clock.advance(6_000)
+  expect(has(await seen($, 'terminal', false), /Waiting for 1 subagent/)).toBe(true)
+})
+
+test('subagents that all answer within 8 s never raise the band', async ($, on) => {
+  const { clock } = await quickFanOut($, on, 2)
+  await clock.advance(2_000)
+  await $.turn.complete(done('a1', 7_000, 'a1'))
+  await $.turn.complete(done('a2', 8_000, 'a2'))
+  await clock.advance(20_000)
+  expect(has(await seen($, 'terminal', false), /Waiting for|Task complete/)).toBe(false)
+})
+
+test("a subagent's own turn start does not restart the main turn", async ($, on) => {
+  const { clock } = await waitingTurn($, on, 2)
+  await $.turn.start({ text: 'Again.', turnId: 'a1-turn-2', agentId: 'a1' } as never)
+  await clock.advance(1_000)
+  const shown = await seen($, 'terminal')
+  expect(has(shown, /2 tool calls/)).toBe(true)
+  expect(has(shown, /1m 01s/), "the main turn's clock").toBe(true)
 })

@@ -207,6 +207,11 @@ declare module 'claude-code' {
       showAll: boolean
       /** The main turn's countdown: made at `turn.start`, kept past its end while it waits on subagents. */
       eta: EtaTurn | null
+      /**
+       * When the wait on background subagents began: the start of the main turn that ended with them still running.
+       * Kept through Claude's later turns until none of the main loop's subagents runs, so the count spans them all.
+       */
+      waitSince: number | null
     }
   }
 }

@@ -92,6 +92,7 @@ const agents = atom({ plugin: 'session-progress', key: 'agents' } as const, [])
 const openStat = atom({ plugin: 'session-progress', key: 'openStat' } as const, null)
 const showAll = atom({ plugin: 'session-progress', key: 'showAll' } as const, false)
 const etaTurn = atom({ plugin: 'session-progress', key: 'eta' } as const, null)
+const waitSince = atom({ plugin: 'session-progress', key: 'waitSince' } as const, null)
 
 // What the settings turned on, read by the timers and hooks outside `register`. Module state: a reload sets it again.
 const config = { eta: true }
@@ -693,6 +694,8 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
+    // A subagent's turn is its own run's, which its first event starts: the main turn goes on.
+    if (e.agentId !== undefined) return next(e)
     const now = await $.clock.now()
     await update($, summary, () => null)
     // A task list that finished last turn starts this one clean; an unfinished one carries on.
@@ -938,8 +941,9 @@ export const register: Register = (on, options) => {
       if ((await read($, live)) === null && !(await read($, agents)).some(isRunning)) stopTicking()
       // A turn that ended waiting: the bar eases on to the next share done, or to its finish once nothing is left.
       const sum = await read($, summary)
-      if ((await read($, live)) === null && sum !== null && sum.reason === 'answer' && sum.startedAt !== undefined) {
-        const wait = waitOf(await read($, agents), sum.startedAt, true)
+      const since = (await read($, waitSince)) ?? sum?.startedAt
+      if ((await read($, live)) === null && sum !== null && sum.reason === 'answer' && since !== undefined) {
+        const wait = waitOf(await read($, agents), since, true)
         if (wait === null || wait.total > 1) {
           scene.palette = wait === null ? DONE : ACCENT
           scene.target = wait === null ? 1 : wait.fill
@@ -949,13 +953,17 @@ export const register: Register = (on, options) => {
           startFrames($)
         }
       }
+      if (!(await read($, agents)).some(run => run.dispatchedByMain && isRunning(run))) await update($, waitSince, () => null)
       return next(e)
     }
     await reconcileAgents($)
     const l = await read($, live)
-    const wait = e.reason === 'answer' ? waitOf(await read($, agents), l?.startedAt ?? null, true) : null
+    // A wait already under way from an earlier turn goes on counting from its own start.
+    const since = (await read($, waitSince)) ?? l?.startedAt ?? null
+    const wait = e.reason === 'answer' ? waitOf(await read($, agents), since, true) : null
     const waiting = wait?.pending ?? 0
     if (waiting === 0) stopTicking()
+    await update($, waitSince, () => (waiting === 0 ? null : since))
 
     const taskList = await read($, tasks)
     const eta = config.eta ? await read($, etaTurn) : null
@@ -1267,20 +1275,49 @@ export const register: Register = (on, options) => {
     const s = await read($, summary)
     const taskList = await read($, tasks)
 
+    const now = await $.clock.now()
     const showLive = l !== null && l.isLong
     const showSummary = !showLive && s !== null && !e.props.isWorking
-    if (!showLive && !showSummary) return next(e)
+    // With neither, a wait on background subagents still gets the band once it has run as long as a turn needs to: after a quick
+    // hand-off, and through Claude's short turns between their answers. Two or more are a known list of work, as a plan of two is.
+    const since = showLive || showSummary ? null : await read($, waitSince)
+    const waited = since === null ? null : waitOf(await read($, agents), since, true)
+    const wave = waited === null || now - since! < (waited.total >= 2 ? SHOW_WITH_PLAN_AFTER_MS : SHOW_AFTER_MS) ? null : waited
+    if (!showLive && !showSummary && wave === null) return next(e)
 
     // Another mod's band beneath this one (factory-floor's strip, say) stays visible, drawn above ours.
     const below = await next(e)
     const maxRows = Math.max(1, e.props.maxRows - (below == null ? 0 : 2))
 
-    const now = await $.clock.now()
     const t = Date.now()
 
     // The frame loop paints the terminal's band alone; the desktop's draws are whole each time.
     if (isTerminal) scene.requestId = e.requestId
     const barWidth = Math.max(12, width - BAR_SLACK)
+
+    if (wave !== null && since !== null) {
+      const label = wave.longest === null ? '' : countdownLabel(wave.longest, false, isTerminal, barWidth)
+      return (
+        <Box flexDirection="column">
+          {below}
+          <Box key="head-row" flexDirection="row" justifyContent="space-between" width={marks.rowWidth}>
+            <Box flexDirection="row" flexShrink={1}>
+              {marks.mark(SPINNER_KEY, '◐', ACCENT)}
+              <Text bold color="claude" wrap="truncate-end">
+                {' '}
+                Waiting for {plural(wave.pending, 'subagent')}
+              </Text>
+            </Box>
+            <Text dimColor>
+              {waitCount(wave)} · {duration(now - since)}
+            </Text>
+          </Box>
+          <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
+            {marks.bar(BAR_KEY, barWidth, wave.fill, t, ACCENT, { shimmer: true, label, labelColor: ACCENT.base })}
+          </Box>
+        </Box>
+      )
+    }
 
     if (showLive) {
       const eta = config.eta ? await read($, etaTurn) : null
@@ -1406,7 +1443,7 @@ export const register: Register = (on, options) => {
 
     const sum = s as Summary
     const total = await read($, totals)
-    const wait = sum.reason === 'answer' ? waitOf(await read($, agents), sum.startedAt ?? null, true) : null
+    const wait = sum.reason === 'answer' ? waitOf(await read($, agents), (await read($, waitSince)) ?? sum.startedAt ?? null, true) : null
     const waiting = wait?.pending ?? 0
     // More than one subagent fill the bar by the share done and label it with the longest countdown; one keeps the turn's own.
     const isShare = wait !== null && wait.total > 1
