@@ -109,7 +109,8 @@ export type Live = {
   subagents: number
   errors: number
   byTool: Record<string, number>
-  running: { id: string; label: string }[]
+  /** `isAgent` marks an Agent call, absent on one kept from before it existed. */
+  running: { id: string; label: string; isAgent?: boolean }[]
   lastActivity: string | null
   tokensIn: number
   tokensCached: number
@@ -125,6 +126,8 @@ export type Live = {
 
 export type Summary = {
   reason: 'answer' | 'aborted' | 'refusal' | 'error'
+  /** When the turn started, which tells its subagents from earlier turns'. Absent on a summary kept from before it existed. */
+  startedAt?: number
   durationMs: number
   steps: number
   toolCalls: number

@@ -290,10 +290,28 @@ function freshAgent(id: string, startedAt: number): AgentRun {
 
 const isRunning = (run: AgentRun) => run.finishedAt === null
 
-/** The subagents a finished main turn still waits on: the ones its own Agent calls started that have not answered. */
-export function waitingOn(runs: readonly AgentRun[]): number {
-  return runs.filter(run => run.dispatchedByMain && isRunning(run)).length
+/** A main turn's wait on its subagents: how many are done of those it waits on, the bar's fill, and the longest countdown left. */
+type Wait = { done: number; pending: number; total: number; fill: number | null; longest: Spread | null }
+
+/**
+ * The wait on the subagents the main loop dispatched since `since`: during the turn those alone, after it any earlier one still running too.
+ * Null when none is running. More than one fill the bar by the share done; one fills it with its own countdown.
+ */
+function waitOf(runs: readonly AgentRun[], since: number | null, isAfterTurn: boolean): Wait | null {
+  const list = runs.filter(run => run.dispatchedByMain && ((isAfterTurn && isRunning(run)) || (since !== null && run.startedAt >= since)))
+  const pending = list.filter(isRunning)
+  if (pending.length === 0) return null
+  const done = list.length - pending.length
+  const only = list.length === 1 ? list[0]! : null
+  const fill = only === null ? done / list.length : config.eta ? (only.eta?.fill ?? null) : planProgress(only.tasks)
+  // A subagent with no estimate yet does not hide the others'.
+  const spreads = pending.flatMap(run => (run.eta?.last == null ? [] : [run.eta.last]))
+  const longest = config.eta && spreads.length > 0 ? combine(null, spreads) : null
+  return { done, pending: pending.length, total: list.length, fill, longest }
 }
+
+/** `2/5 subagents`: done out of those waited on, as the band counts tasks. */
+const waitCount = (wait: Wait) => `${wait.done}/${wait.total} ${wait.total === 1 ? 'subagent' : 'subagents'}`
 
 /** Applies `change` to an agent's run, adding the run first if the band has not seen that agent yet. */
 async function updateAgent($: Dollar, id: string, now: number, change: (run: AgentRun) => AgentRun) {
@@ -782,7 +800,7 @@ export const register: Register = (on, options) => {
             subagentToolCalls: isSub ? l.subagentToolCalls + 1 : l.subagentToolCalls,
             subagents: isAgent ? l.subagents + 1 : l.subagents,
             byTool: isSub ? l.byTool : { ...l.byTool, [name]: (l.byTool[name] ?? 0) + 1 },
-            running: isSub ? l.running : [...l.running, { id: e.tool_use_id, label }],
+            running: isSub ? l.running : [...l.running, { id: e.tool_use_id, label, ...(isAgent ? { isAgent: true } : {}) }],
             lastActivity: isSub ? l.lastActivity : label,
             detail: withCall(detailOf(l), call),
           },
@@ -879,6 +897,25 @@ export const register: Register = (on, options) => {
     return ran
   }).catch(($, e, next) => next(e)) // an observer: its failure never blocks the call
 
+  // A foreground Agent call answers only when its subagent does: the spawn is where the band learns the main turn waits on it.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    // An observer past the spawn: its failure must not spawn the agent again.
+    try {
+      const agentId = started.deny === undefined ? started.agentId : undefined
+      const l = await read($, live)
+      // The main loop's own Agent call, not a nested subagent's or a plugin's spawn.
+      if (agentId !== undefined && e.parentAgentId === undefined && l !== null && l.running.some(r => r.id === e.tool_use_id)) {
+        const now = await $.clock.now()
+        await updateAgent($, agentId, now, run => ({ ...run, description: e.description, type: e.subagentType, parentId: null, dispatchedByMain: true }))
+        startTicking($)
+      }
+    } catch {
+      // the band misses this one; the Agent call's answer marks it still
+    }
+    return started
+  })
+
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) {
       const now = await $.clock.now()
@@ -899,13 +936,27 @@ export const register: Register = (on, options) => {
       }))
       if (ended !== undefined) await flush($, ended.pending, e.reason === 'aborted', null)
       if ((await read($, live)) === null && !(await read($, agents)).some(isRunning)) stopTicking()
+      // A turn that ended waiting: the bar eases on to the next share done, or to its finish once nothing is left.
+      const sum = await read($, summary)
+      if ((await read($, live)) === null && sum !== null && sum.reason === 'answer' && sum.startedAt !== undefined) {
+        const wait = waitOf(await read($, agents), sum.startedAt, true)
+        if (wait === null || wait.total > 1) {
+          scene.palette = wait === null ? DONE : ACCENT
+          scene.target = wait === null ? 1 : wait.fill
+          scene.finishFrom = scene.shown
+          scene.finishFrames = 0
+          scene.isFinishing = true
+          startFrames($)
+        }
+      }
       return next(e)
     }
     await reconcileAgents($)
-    const waiting = e.reason === 'answer' ? waitingOn(await read($, agents)) : 0
+    const l = await read($, live)
+    const wait = e.reason === 'answer' ? waitOf(await read($, agents), l?.startedAt ?? null, true) : null
+    const waiting = wait?.pending ?? 0
     if (waiting === 0) stopTicking()
 
-    const l = await read($, live)
     const taskList = await read($, tasks)
     const eta = config.eta ? await read($, etaTurn) : null
     // The first estimate against what followed, for a turn that answered with nothing left running.
@@ -929,6 +980,7 @@ export const register: Register = (on, options) => {
       if (l.isLong) {
         const done: Summary = {
           reason: e.reason,
+          startedAt: l.startedAt,
           durationMs: e.durationMs,
           steps: l.steps,
           toolCalls: l.toolCalls,
@@ -954,7 +1006,8 @@ export const register: Register = (on, options) => {
         await update($, summary, () => done)
         // Handed off to a background subagent, the work is not done: the bar keeps what the task list says.
         scene.palette = waiting > 0 ? ACCENT : e.reason === 'answer' ? DONE : e.reason === 'aborted' ? WARN : FAIL
-        scene.target = e.reason === 'answer' && waiting === 0 ? 1 : (eta?.fill ?? planProgress(taskList) ?? scene.shown)
+        scene.target =
+          e.reason === 'answer' && waiting === 0 ? 1 : wait !== null && wait.total > 1 ? wait.fill : (eta?.fill ?? planProgress(taskList) ?? scene.shown)
         scene.finishFrom = scene.shown
         scene.finishFrames = 0
         scene.isFinishing = true
@@ -1231,12 +1284,23 @@ export const register: Register = (on, options) => {
 
     if (showLive) {
       const eta = config.eta ? await read($, etaTurn) : null
+      // Blocked on its own Agent calls alone, the turn waits on its subagents: the bar follows them instead.
+      const wait = l.running.length > 0 && l.running.every(r => r.isAgent === true) ? waitOf(await read($, agents), l.startedAt, false) : null
       // With the countdown on, the bar follows its fill; without it, the share of the task list done.
-      const progress = config.eta ? (eta?.fill ?? null) : planProgress(taskList)
-      const isUp = isGrowing(eta?.upUntil, now)
-      const note = noteOf(eta, now)
+      const progress = wait !== null ? wait.fill : config.eta ? (eta?.fill ?? null) : planProgress(taskList)
+      const isUp = wait === null && isGrowing(eta?.upUntil, now)
+      const note = wait === null ? noteOf(eta, now) : null
       // With nothing to measure the bar goes unlabelled: the head row already shows the clock.
-      const label = !config.eta ? (progress === null ? '' : pctLabel(progress)) : countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth, note)
+      const label =
+        wait !== null
+          ? wait.longest === null
+            ? ''
+            : countdownLabel(wait.longest, false, isTerminal, barWidth)
+          : !config.eta
+            ? progress === null
+              ? ''
+              : pctLabel(progress)
+            : countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth, note)
       const labelColor = label === '' ? MUTED : isUp ? WARN.base : note?.isDown ? DONE.base : ACCENT.base
       // A last live draw can land after the turn ended: it must not repaint the finish orange.
       if (isTerminal && !scene.isFinishing) {
@@ -1246,7 +1310,7 @@ export const register: Register = (on, options) => {
         scene.label = label
         scene.labelColor = labelColor
         // A jump not yet taken in: given back, the bar drops at once and the span drains after it; gained, the bar eases up and the span glows.
-        const rebase = eta?.rebase
+        const rebase = wait === null ? eta?.rebase : undefined
         if (rebase !== undefined && rebase.at !== scene.rebaseAt) {
           scene.rebaseAt = rebase.at
           if (progress !== null && now - rebase.at < CHANGE_MS) {
@@ -1255,7 +1319,7 @@ export const register: Register = (on, options) => {
           }
         }
       }
-      const jump = isTerminal ? sceneJump(t) : jumpOf(eta, now)
+      const jump = isTerminal ? sceneJump(t) : wait === null ? jumpOf(eta, now) : null
       if (isTerminal) scene.barWidth = barWidth
 
       const work = eta?.work ?? null
@@ -1265,7 +1329,8 @@ export const register: Register = (on, options) => {
       const unit = usesWork ? 'items' : 'tasks'
       const current = list.find(task => task.status === 'in_progress')
       const named = current === undefined ? undefined : usesWork ? capitalize(current.subject) : (current.activeForm ?? current.subject)
-      const headline = named ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking'
+      const headline =
+        wait !== null ? `Waiting for ${plural(wait.pending, 'subagent')}` : (named ?? l.running[l.running.length - 1]?.label ?? l.lastActivity ?? 'Thinking')
       const done = list.filter(task => task.status === 'completed').length
       const detail = detailOf(l)
       const stats = [
@@ -1300,7 +1365,7 @@ export const register: Register = (on, options) => {
             </Text>
           </Box>
           <Text dimColor>
-            {list.length > 0 ? `${done}/${list.length} ${unit} · ` : ''}
+            {wait !== null ? `${waitCount(wait)} · ` : list.length > 0 ? `${done}/${list.length} ${unit} · ` : ''}
             {duration(now - l.startedAt)}
           </Text>
         </Box>,
@@ -1341,7 +1406,10 @@ export const register: Register = (on, options) => {
 
     const sum = s as Summary
     const total = await read($, totals)
-    const waiting = sum.reason === 'answer' ? waitingOn(await read($, agents)) : 0
+    const wait = sum.reason === 'answer' ? waitOf(await read($, agents), sum.startedAt ?? null, true) : null
+    const waiting = wait?.pending ?? 0
+    // More than one subagent fill the bar by the share done and label it with the longest countdown; one keeps the turn's own.
+    const isShare = wait !== null && wait.total > 1
     const palette: Palette = waiting > 0 ? ACCENT : sum.reason === 'answer' ? DONE : sum.reason === 'aborted' ? WARN : FAIL
     const color = waiting > 0 ? 'claude' : sum.reason === 'answer' ? 'success' : sum.reason === 'aborted' ? 'warning' : 'error'
     const mark = waiting > 0 ? '◐' : sum.reason === 'answer' ? '✓' : sum.reason === 'aborted' ? '■' : '✗'
@@ -1359,17 +1427,23 @@ export const register: Register = (on, options) => {
     // With the countdown on, the bar stays where its fill got to; without it, at the task list's share done.
     const planned = sum.fill ?? (sum.tasksTotal > 0 ? sum.tasksDone / sum.tasksTotal : null)
     // Waiting on subagents, the fill goes on with their countdowns.
-    const held = waiting > 0 ? (eta?.fill ?? planned) : planned
+    const held = isShare ? wait.fill : waiting > 0 ? (eta?.fill ?? planned) : planned
     const finalProgress = sum.reason === 'answer' && waiting === 0 ? 1 : held
     // The finish eases in on the terminal's frame loop; the desktop draws where it lands.
     const isEasing = isTerminal && scene.isFinishing
     // Waiting with nothing to measure, the bar sweeps rather than settle on a number it does not have.
     const barProgress = waiting > 0 && held === null ? null : isEasing ? scene.shown : (finalProgress ?? 0)
     // Only a wait counts down here, so a ↑ from it must not tint a settled finish.
-    const isUp = waiting > 0 && isGrowing(eta?.upUntil, now)
-    const waitLabel = waiting > 0 ? countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth) : ''
-    // A wait with the countdown on shows the subagents' countdown or nothing: never a share it does not have.
-    const isCounting = config.eta && waiting > 0
+    const isUp = waiting > 0 && !isShare && isGrowing(eta?.upUntil, now)
+    const waitLabel = isShare
+      ? wait.longest === null
+        ? ''
+        : countdownLabel(wait.longest, false, isTerminal, barWidth)
+      : waiting > 0
+        ? countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth)
+        : ''
+    // A wait with the countdown on shows the subagents' countdown or nothing: never a share it does not have. A share of subagents done names none either.
+    const isCounting = waiting > 0 && (config.eta || isShare)
     // The same for a turn that did not answer: its fill is paced by time, so with the countdown on only the answer's 100% names a share.
     const showsPct = !isCounting && finalProgress !== null && (!config.eta || sum.reason === 'answer')
     if (isTerminal) {
@@ -1421,6 +1495,7 @@ export const register: Register = (on, options) => {
               {title}
             </Text>
           </Box>
+          {wait !== null && <Text dimColor>{waitCount(wait)}</Text>}
         </Box>
         <Box key="bar-row" flexDirection="row" width={marks.rowWidth} flexShrink={0}>
           {marks.bar(BAR_KEY, barWidth, barProgress, t, palette, { shimmer: isEasing || isCounting, label, labelColor: isUp ? WARN.base : palette.base })}
