@@ -914,7 +914,7 @@ export const register: Register = (on, options) => {
       // the band misses this one; the Agent call's answer marks it still
     }
     return started
-  })
+  }).catch(($, e, next) => next(e)) // an observer: its failure never blocks the spawn
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) {
