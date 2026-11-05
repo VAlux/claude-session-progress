@@ -222,7 +222,16 @@ const scene = {
   jump: null as { from: number; to: number; t0: number } | null,
   // The countdown's last jump the band has taken in, by when it came.
   rebaseAt: null as number | null,
+  // Whether the band drawn last moves between redraws (a shimmer, a spinner): with nothing moving, the loop runs only for a finish.
+  isMoving: false,
+  // Whether the main band's SPINNER_KEY holds a spinner (a live turn), not a still mark (a wait, a summary).
+  spins: false,
+  // A subagent's band in its transcript: its frames, painted instead of the main band's, `t` (Date.now()) in.
+  agentFrame: null as ((t: number) => Frame[]) | null,
 }
+
+/** One Raster's cells the frame loop paints. */
+type Frame = { key: string; cells: string }
 
 /** The jump the frame loop is animating, `t` (Date.now()) into it. */
 const sceneJump = (t: number): Jump | null => (scene.jump === null ? null : { from: scene.jump.from, to: scene.jump.to, ageMs: t - scene.jump.t0 })
@@ -520,18 +529,37 @@ function paint($: Dollar) {
   } else if (scene.target !== null) {
     scene.shown += (scene.target - scene.shown) * 0.12
   }
-  if (scene.requestId === null || scene.barWidth <= 0) return
+  if (scene.requestId === null) return
+  // A subagent's band in view: the main bar's finish eases on above, out of sight.
+  const frames = scene.agentFrame !== null ? scene.agentFrame(t) : mainFrames(t)
+  for (const frame of frames) $.ui.blit({ requestId: scene.requestId, key: frame.key, cells: frame.cells }).catch(skipFrame)
+}
+
+/** The main band's bar, and its spinner while a live turn draws one. */
+function mainFrames(t: number): Frame[] {
+  if (scene.barWidth <= 0 || (!scene.isMoving && !scene.isFinishing)) return []
   const progress = scene.target === null ? null : scene.shown
   const label = scene.showPct ? pctLabel(scene.shown) : scene.label
   const labelColor = scene.showPct ? scene.palette.base : scene.labelColor
   const jump = sceneJump(t)
   const change = jump === null ? null : changeSpan(jump, jump.ageMs, scene.palette)
   if (change === null) scene.jump = null
-  const cells = barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor, change })
-  $.ui.blit({ requestId: scene.requestId, key: BAR_KEY, cells }).catch(skipFrame)
-  if (!scene.isFinishing) {
-    $.ui.blit({ requestId: scene.requestId, key: SPINNER_KEY, cells: spinnerCells(t, scene.palette) }).catch(skipFrame)
-  }
+  const frames = [{ key: BAR_KEY, cells: barCells(scene.barWidth, progress, t, scene.palette, { shimmer: true, label, labelColor, change }) }]
+  if (!scene.isFinishing && scene.spins) frames.push({ key: SPINNER_KEY, cells: spinnerCells(t, scene.palette) })
+  return frames
+}
+
+/**
+ * What the terminal band just drawn leaves the frame loop: whether it moves, and what. A band that moves starts the loop, so a wait
+ * or a subagent's band shimmers as a live turn's does, not once a second with each redraw; one that does not stops it, unless a finish eases on.
+ */
+function sceneOf($: Dollar, requestId: string | null, look: { isMoving: boolean; spins?: boolean; agentFrame?: (t: number) => Frame[] }) {
+  scene.requestId = requestId
+  scene.isMoving = look.isMoving
+  scene.spins = look.spins ?? false
+  scene.agentFrame = look.agentFrame ?? null
+  if (look.isMoving) startFrames($)
+  else if (!scene.isFinishing) stopFrames()
 }
 
 function settle($: Dollar) {
@@ -1039,14 +1067,20 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     // The band is raised on the terminal and the desktop alone.
-    if ((e.surface !== 'terminal' && e.surface !== 'desktop') || e.props.hasSurvey) return next(e)
+    if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
+    const isTerminal = e.surface === 'terminal'
+    /** No band of ours on the terminal: the frame loop has nothing to paint. */
+    const none = () => {
+      if (isTerminal) sceneOf($, null, { isMoving: false })
+      return next(e)
+    }
+    if (e.props.hasSurvey) return none()
 
     await read($, tick) // redraw each second for the clock
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, e.props.bodyColumns)
     const opened = await read($, openStat)
     const isAll = await read($, showAll)
-    const isTerminal = e.surface === 'terminal'
     const marks = e.surface === 'terminal' ? terminalMarks($.ui.resolve(e), width) : desktopMarks($.ui.resolve(e))
 
     /** Up to `room` rows of a step list, keeping the active step in view, then a `+N more` row; a row with a trail (its estimate) ends with it. */
@@ -1167,7 +1201,7 @@ export const register: Register = (on, options) => {
     const viewed = e.props.view.agentId
     if (viewed !== undefined) {
       const run = (await read($, agents)).find(a => a.id === viewed)
-      if (run === undefined) return next(e)
+      if (run === undefined) return none()
       const below = await next(e)
       const maxRows = Math.max(1, e.props.maxRows - (below == null ? 0 : 2))
       const now = await $.clock.now()
@@ -1204,8 +1238,18 @@ export const register: Register = (on, options) => {
             ? ''
             : pctLabel(progress)
       const labelColor = label === '' ? MUTED : isUp ? WARN.base : note?.isDown ? DONE.base : palette.base
-      // A subagent's bar has no frame loop: its jump steps on with each redraw.
+      // On the desktop its jump steps on with each redraw; on the terminal the frame loop moves it on between them too.
       const jump = isDone ? null : jumpOf(runEta, now)
+      if (isTerminal) {
+        const frame = (ft: number): Frame[] => {
+          const change = jump === null ? null : changeSpan(jump, jump.ageMs + (ft - t), palette)
+          return [
+            { key: AGENT_BAR_KEY, cells: barCells(barWidth, progress, ft, palette, { shimmer: true, label, labelColor, change }) },
+            { key: AGENT_SPINNER_KEY, cells: spinnerCells(ft, palette) },
+          ]
+        }
+        sceneOf($, e.requestId, isDone ? { isMoving: false } : { isMoving: true, agentFrame: frame })
+      }
       const detail = detailOf(run)
       const stats = [
         stat('tools', plural(run.toolCalls, 'tool call')),
@@ -1283,7 +1327,7 @@ export const register: Register = (on, options) => {
     const since = showLive || showSummary ? null : await read($, waitSince)
     const waited = since === null ? null : waitOf(await read($, agents), since, true)
     const wave = waited === null || now - since! < (waited.total >= 2 ? SHOW_WITH_PLAN_AFTER_MS : SHOW_AFTER_MS) ? null : waited
-    if (!showLive && !showSummary && wave === null) return next(e)
+    if (!showLive && !showSummary && wave === null) return none()
 
     // Another mod's band beneath this one (factory-floor's strip, say) stays visible, drawn above ours.
     const below = await next(e)
@@ -1291,12 +1335,15 @@ export const register: Register = (on, options) => {
 
     const t = Date.now()
 
-    // The frame loop paints the terminal's band alone; the desktop's draws are whole each time.
-    if (isTerminal) scene.requestId = e.requestId
     const barWidth = Math.max(12, width - BAR_SLACK)
 
     if (wave !== null && since !== null) {
       const label = wave.longest === null ? '' : countdownLabel(wave.longest, false, isTerminal, barWidth)
+      // The frame loop shimmers it; its fill steps to each share done, since Claude's short turns between answers start the bar anew.
+      if (isTerminal) {
+        Object.assign(scene, { barWidth, target: wave.fill, shown: wave.fill ?? scene.shown, palette: ACCENT, showPct: false, label, labelColor: ACCENT.base, jump: null })
+        sceneOf($, e.requestId, { isMoving: true })
+      }
       return (
         <Box flexDirection="column">
           {below}
@@ -1357,7 +1404,10 @@ export const register: Register = (on, options) => {
         }
       }
       const jump = isTerminal ? sceneJump(t) : wait === null ? jumpOf(eta, now) : null
-      if (isTerminal) scene.barWidth = barWidth
+      if (isTerminal) {
+        scene.barWidth = barWidth
+        sceneOf($, e.requestId, { isMoving: true, spins: true })
+      }
 
       const work = eta?.work ?? null
       // Claude Code draws no list for Claude's reports, so the band lists them, unless a task list has the rows.
@@ -1468,8 +1518,12 @@ export const register: Register = (on, options) => {
     const finalProgress = sum.reason === 'answer' && waiting === 0 ? 1 : held
     // The finish eases in on the terminal's frame loop; the desktop draws where it lands.
     const isEasing = isTerminal && scene.isFinishing
+    // A wait with the countdown on shows the subagents' countdown or nothing: never a share it does not have. A share of subagents done names none either.
+    const isCounting = waiting > 0 && (config.eta || isShare)
+    // Counting on the terminal, the frame loop shimmers the bar and eases it on to where the wait has got to.
+    if (isTerminal && isCounting && !isEasing) scene.target = held
     // Waiting with nothing to measure, the bar sweeps rather than settle on a number it does not have.
-    const barProgress = waiting > 0 && held === null ? null : isEasing ? scene.shown : (finalProgress ?? 0)
+    const barProgress = waiting > 0 && held === null ? null : isEasing || (isTerminal && isCounting) ? scene.shown : (finalProgress ?? 0)
     // Only a wait counts down here, so a ↑ from it must not tint a settled finish.
     const isUp = waiting > 0 && !isShare && isGrowing(eta?.upUntil, now)
     const waitLabel = isShare
@@ -1479,8 +1533,6 @@ export const register: Register = (on, options) => {
       : waiting > 0
         ? countdownLabel(eta?.last ?? null, isUp, isTerminal, barWidth)
         : ''
-    // A wait with the countdown on shows the subagents' countdown or nothing: never a share it does not have. A share of subagents done names none either.
-    const isCounting = waiting > 0 && (config.eta || isShare)
     // The same for a turn that did not answer: its fill is paced by time, so with the countdown on only the answer's 100% names a share.
     const showsPct = !isCounting && finalProgress !== null && (!config.eta || sum.reason === 'answer')
     if (isTerminal) {
@@ -1489,6 +1541,7 @@ export const register: Register = (on, options) => {
       scene.showPct = showsPct
       scene.label = waitLabel
       scene.labelColor = isUp ? WARN.base : palette.base
+      sceneOf($, e.requestId, { isMoving: isCounting })
     }
     const label = waitLabel !== '' ? waitLabel : !showsPct || barProgress === null ? '' : pctLabel(barProgress)
     const cachePct = sum.tokensIn > 0 ? Math.round((sum.tokensCached / sum.tokensIn) * 100) : 0

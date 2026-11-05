@@ -12,6 +12,9 @@ type Clock = { advance: (ms: number) => Promise<void> }
  * The engine beneath the mod. A foreground Agent call answers only once the test releases it, as the real one answers when its
  * subagent does; a background one answers at once, with the subagent last spawned. Spawns start `a1`, `a2`, ...
  */
+/** Frames the band took since the last `framesOf`, by Raster key. */
+const blits: Record<string, number> = {}
+
 function engineBottom(on: On) {
   const held: (() => void)[] = []
   const spawned: string[] = []
@@ -20,7 +23,11 @@ function engineBottom(on: On) {
   on('tool.register', ($, e) => ({ value: { tool: `mcp__${PLUGIN}__${e.name}` } }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
-  on('ui.blit', () => ({ value: {} }))
+  on('ui.blit', ($, e) => {
+    const key = String((e as { key?: unknown }).key)
+    blits[key] = (blits[key] ?? 0) + 1
+    return { value: {} }
+  })
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine-band</Text>
@@ -135,6 +142,21 @@ async function seen($: Engine, surface: 'terminal' | 'desktop', isWorking = true
   const fill = Number(/<rect width="(\d+)" height="6" rx="3" fill="url\(#f\)"/.exec(bar?.source ?? '')?.[1] ?? -1)
   return { all: [...texts, ...bars, ...svgs.map(svg => svg.alt)], fill }
 }
+/** The frames the terminal band takes over one second after it is drawn, by Raster key. */
+async function framesOf($: Engine, clock: Clock, view: { agentId?: string } = {}, isWorking = false) {
+  const ui = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking, maxRows: 30, bodyColumns: 80, scroll: { offset: 0, bodyRows: 30 }, view },
+  })
+  for (const key of Object.keys(blits)) delete blits[key]
+  for (let i = 0; i < 14; i++) await clock.advance(70)
+  const taken = { ...blits }
+  await ui.unmount()
+  return taken
+}
+
 const has = (shown: { all: string[] }, re: RegExp) => shown.all.some(t => re.test(t))
 
 function rasterText(cells: string): string {
@@ -291,4 +313,36 @@ test("a subagent's own turn start does not restart the main turn", async ($, on)
   const shown = await seen($, 'terminal')
   expect(has(shown, /2 tool calls/)).toBe(true)
   expect(has(shown, /1m 01s/), "the main turn's clock").toBe(true)
+})
+
+test("a quick hand-off's wait keeps its bar moving between the band's once-a-second redraws", async ($, on) => {
+  const { clock } = await quickFanOut($, on, 3)
+  await clock.advance(10_000)
+  expect((await framesOf($, clock)).bar ?? 0).toBeGreaterThan(7)
+})
+
+test('a long turn that ended waiting on background subagents keeps its bar moving, its mark still', async ($, on) => {
+  const { clock } = await waitingTurn($, on, 2, true)
+  await $.turn.complete(done('t1', 60_000))
+  await clock.advance(5_000)
+  const frames = await framesOf($, clock)
+  expect(frames.bar ?? 0).toBeGreaterThan(7)
+  expect(frames.spin ?? 0, 'the head row shows a mark, not a spinner').toBe(0)
+})
+
+test("a running subagent's band in its transcript moves between redraws", async ($, on) => {
+  const { clock } = await waitingTurn($, on, 2, true)
+  const frames = await framesOf($, clock, { agentId: 'a1' }, true)
+  expect(frames['agent-bar'] ?? 0).toBeGreaterThan(7)
+  expect(frames['agent-spin'] ?? 0).toBeGreaterThan(7)
+  expect(frames.bar ?? 0, "the main bar's frames go nowhere").toBe(0)
+})
+
+test('once the last subagent has answered and the bar settled, the frame loop stops', async ($, on) => {
+  const { clock } = await waitingTurn($, on, 2, true)
+  await $.turn.complete(done('t1', 60_000))
+  await $.turn.complete(done('a1', 61_000, 'a1'))
+  await $.turn.complete(done('a2', 62_000, 'a2'))
+  await clock.advance(3_000)
+  expect(await framesOf($, clock)).toEqual({})
 })
