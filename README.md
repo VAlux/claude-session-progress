@@ -147,7 +147,7 @@ Quick answers and short Q&A never show the band. It appears once a turn has run:
 
 The thresholds are the constants at the top of [`hooks/register.tsx`](hooks/register.tsx).
 
-While the band shows, Claude Code's own spinner line (`Sauteing… (12s, 300 tokens)`) is hidden, since the band's head row has the clock and its stats the tokens. Before the band appears, after the turn, and in VS Code, the spinner is drawn as usual, and it stays whenever it names a state in place of its word. A subagent's spinner is always left alone. Set `spinner` to `keep` to always see it.
+While the band shows, Claude Code's own spinner line (`Sauteing… (12s, 300 tokens)`) is hidden, since the band's head row has the clock and its stats the tokens. Before the band appears, after the turn, while you have collapsed the band, and in VS Code, the spinner is drawn as usual, and it stays whenever it names a state in place of its word. A subagent's spinner is always left alone. Set `spinner` to `keep` to always see it.
 
 ## Settings
 
@@ -167,7 +167,7 @@ To make the band your only task view, hide Claude Code's own list with `ctrl+t` 
 - Costs are estimates: each model step's tokens at Anthropic's list prices (the table at the top of [`hooks/frames.ts`](hooks/frames.ts)), subagents included. A model missing from the table adds nothing, and a plan's discount or a different provider's rate is not reflected.
 - The countdown is an estimate: early on it rests on few items and Claude's own sizing, and the summary's `⏱` line shows how far off it was.
 - A command's learned time includes any wait for you to approve it, so a run you approved slowly reads long until later runs push it out. A refused command is never learned.
-- Collapse the band at any time with `ctrl+x ctrl+a`, or with the `[-]` mark at its right edge.
+- Collapse the band at any time with `ctrl+x ctrl+a`, or with the `[-]` mark at its right edge; Claude Code's spinner line comes back until you open it again.
 - A bug in the mod never blocks a tool call: its tool hook passes the call through if it fails.
 - It shares the space above the prompt: another mod's band there (factory-floor's strip, say) is drawn above it, not hidden.
 - It is built on Claude Code's function-hooks plugin API, which is in early access and may change between releases.

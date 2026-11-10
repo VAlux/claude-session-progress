@@ -113,7 +113,7 @@ const mountBand = ($: Engine, surface: Surface, isWorking: boolean, columns: num
     plugin: PLUGIN,
     surface,
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking, maxRows: 30, bodyColumns: columns, scroll: { offset: 0, bodyRows: 30 }, view },
+    props: { hasSurvey: false, isCollapsed: false, isWorking, maxRows: 30, bodyColumns: columns, scroll: { offset: 0, bodyRows: 30 }, view },
   })
 
 /** Everything a band shows: its elements' text, the terminal's bars read back, the desktop's bar described; and the colours of a `↑`. */

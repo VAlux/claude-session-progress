@@ -33,7 +33,7 @@ async function shows($: Engine, text: RegExp, view: { agentId?: string } = {}, i
     plugin: PLUGIN,
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view },
+    props: { hasSurvey: false, isCollapsed: false, isWorking, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view },
   })
   const found = await ui.find({ text })
   const bars = await ui.findAll({ type: 'Raster' })
@@ -136,7 +136,7 @@ test("a subagent's indeterminate bar carries no clock of its own", async ($, on)
     plugin: PLUGIN,
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: { agentId: 'a1' } },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: { agentId: 'a1' } },
   })
   const clocks = await ui.findAll({ type: 'Text', text: /\d+s/ })
   const bar = await ui.find({ key: 'agent-bar', type: 'Raster' })

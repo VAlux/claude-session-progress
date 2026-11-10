@@ -43,7 +43,7 @@ function mount($: Engine, surface: 'terminal' | 'desktop', isWorking: boolean) {
     plugin: PLUGIN,
     surface,
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking, maxRows: 30, bodyColumns: 100, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking, maxRows: 30, bodyColumns: 100, scroll: { offset: 0, bodyRows: 30 }, view: {} },
   })
 }
 

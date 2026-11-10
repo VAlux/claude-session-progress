@@ -251,6 +251,12 @@ function noteOf(eta: EtaTurn | null | undefined, now: number): LabelNote | null 
 let frameTimer: Timer | null = null
 let tickTimer: Timer | null = null
 
+/**
+ * The surfaces where the person collapsed the band (`[-]`, ctrl+x ctrl+a), as its last draw said. Module state, not `$.state`: a render
+ * hook cannot write, and the band's next draw (each second) fills it again after a reload. Read by the spinner and the frame loop.
+ */
+const collapsedOn = new Set<string>()
+
 function freshLive(turnId: string, startedAt: number): Live {
   return {
     turnId,
@@ -554,6 +560,11 @@ function mainFrames(t: number): Frame[] {
  * or a subagent's band shimmers as a live turn's does, not once a second with each redraw; one that does not stops it, unless a finish eases on.
  */
 function sceneOf($: Dollar, requestId: string | null, look: { isMoving: boolean; spins?: boolean; agentFrame?: (t: number) => Frame[] }) {
+  // A collapsed band is off screen: nothing to paint until it opens again and redraws.
+  if (collapsedOn.has('terminal')) {
+    requestId = null
+    look = { isMoving: false }
+  }
   scene.requestId = requestId
   scene.isMoving = look.isMoving
   scene.spins = look.spins ?? false
@@ -712,10 +723,14 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   // While the band shows, the engine's spinner says nothing it does not (the clock, the tokens), so it gives way; it stays when it
-  // names a state (`message`), on a surface with no band, and for a subagent, which the hook is not told where it is drawn.
+  // names a state (`message`), on a surface with no band, while the person has collapsed the band, and for a subagent, which the
+  // hook is not told where it is drawn.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (keepsSpinner || (e.surface !== 'terminal' && e.surface !== 'desktop') || e.props.message !== null) return next(e)
     if (!(await read($, live))?.isLong) return next(e)
+    // Redrawn each second, as the band is, so a collapse or reopen (which the band's draw records) reaches it.
+    await read($, tick)
+    if (collapsedOn.has(e.surface)) return next(e)
     if ((await read($, agents)).some(run => run.id === e.requestId)) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box />
@@ -1069,6 +1084,9 @@ export const register: Register = (on, options) => {
     // The band is raised on the terminal and the desktop alone.
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     const isTerminal = e.surface === 'terminal'
+    // `isCollapsed` is absent on hosts from before the band could collapse.
+    if (e.props.isCollapsed === true) collapsedOn.add(e.surface)
+    else collapsedOn.delete(e.surface)
     /** No band of ours on the terminal: the frame loop has nothing to paint. */
     const none = () => {
       if (isTerminal) sceneOf($, null, { isMoving: false })

@@ -6,7 +6,8 @@ import { PROGRESS_TOOL, applyReport, parseReport, workTasks } from '../hooks/rep
 
 const PLUGIN = 'session-progress'
 
-function engineBottom(on: On, registered: { name: string; isDeferred?: boolean }[] = [], descriptions: string[] = []) {
+/** The engine beneath the mod. `decision` is its permission answer for every tool: a call it asks about is denied, with no one to answer. */
+function engineBottom(on: On, registered: { name: string; isDeferred?: boolean }[] = [], descriptions: string[] = [], decision: 'ask' | 'allow' = 'ask') {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: '/repo' }))
   on('tool.register', ($, e) => {
@@ -14,7 +15,7 @@ function engineBottom(on: On, registered: { name: string; isDeferred?: boolean }
     descriptions.push(e.description)
     return { value: { tool: `mcp__${PLUGIN}__${e.name}` } }
   })
-  on('tool.check', () => ({ decision: 'ask' as const }))
+  on('tool.check', () => ({ decision }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.blit', () => ({ value: {} }))
@@ -62,7 +63,8 @@ test('the progress tool never asks for permission; other tools still do', async 
 })
 
 test('a report is answered ok by the mod itself, a malformed one too', async ($, on) => {
-  engineBottom(on)
+  engineBottom(on, [], [], 'allow')
+  mock.clock(on, { now: 1_000_000 })
   await $.turn.start({ text: 'work', turnId: 't1' })
   expect((await report($, { left: [{ do: 'read the code', size: 's' }] })).result).toBe('ok')
   expect((await report($, { left: 'nonsense', done: 'x' })).result).toBe('ok')
@@ -118,7 +120,7 @@ test('a report is not counted as a tool call', async ($, on) => {
     plugin: PLUGIN,
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
   })
   const texts = (await ui.findAll({})).map(el => el.text)
   await ui.unmount()

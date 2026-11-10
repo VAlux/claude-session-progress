@@ -20,7 +20,7 @@ async function band($: Engine, isWorking: boolean) {
     plugin: PLUGIN,
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
   })
 }
 

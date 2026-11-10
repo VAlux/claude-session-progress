@@ -31,7 +31,7 @@ async function shows($: Engine, text: RegExp) {
     plugin: PLUGIN,
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} },
   })
   const found = await ui.find({ text })
   const bar = await ui.find({ key: 'bar', type: 'Raster' })

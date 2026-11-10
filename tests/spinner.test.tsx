@@ -4,10 +4,14 @@ import type { On } from 'claude-code'
 
 const PLUGIN = 'session-progress'
 
-function engineBottom(on: On) {
+/** The engine beneath the mod; each blit the frame loop sends lands in `blits`. */
+function engineBottom(on: On, blits: string[] = []) {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
-  on('ui.blit', () => ({ value: {} }))
+  on('ui.blit', ($, e) => {
+    blits.push(e.key)
+    return { value: {} }
+  })
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine-spinner</Text>
@@ -35,6 +39,17 @@ async function engineSpinner($: Engine, surface: Surface = 'terminal', message: 
   return found !== undefined
 }
 
+/** The band drawn on `surface`, collapsed by the person or open. */
+async function band($: Engine, surface: Surface, isCollapsed: boolean) {
+  const ui = await $.ui.mount({
+    plugin: PLUGIN,
+    surface,
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isCollapsed, isWorking: true, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  await ui.unmount()
+}
+
 /** A main turn long enough for the band to show. */
 async function longTurn($: Engine, clock: { advance: (ms: number) => Promise<void> }) {
   await $.turn.start({ text: 'build it', turnId: 't1' })
@@ -54,6 +69,29 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await engineSpinner($, surface), 'after the turn').toBe(true)
   })
 }
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: a collapsed band hands the spinner back until it is opened again`, async ($, on) => {
+    await longTurn($, engineBottom(on))
+    await band($, surface, true)
+    expect(await engineSpinner($, surface), 'collapsed').toBe(true)
+    await band($, surface, false)
+    expect(await engineSpinner($, surface), 'open again').toBe(false)
+  })
+}
+
+test('the frame loop paints nothing into a collapsed band, and starts again when it opens', async ($, on) => {
+  const blits: string[] = []
+  const clock = engineBottom(on, blits)
+  await longTurn($, clock)
+  await band($, 'terminal', true)
+  blits.length = 0
+  await clock.advance(1_000)
+  expect(blits, 'collapsed').toEqual([])
+  await band($, 'terminal', false)
+  await clock.advance(1_000)
+  expect(blits.length, 'open again').toBeGreaterThan(0)
+})
 
 test("a spinner saying what state the turn is in is the engine's, band or not", async ($, on) => {
   await longTurn($, engineBottom(on))

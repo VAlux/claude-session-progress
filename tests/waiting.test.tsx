@@ -132,7 +132,7 @@ async function seen($: Engine, surface: 'terminal' | 'desktop', isWorking = true
     plugin: PLUGIN,
     surface,
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking, maxRows: 30, bodyColumns: 80, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking, maxRows: 30, bodyColumns: 80, scroll: { offset: 0, bodyRows: 30 }, view: {} },
   })
   const texts = (await ui.findAll({})).map(el => el.text)
   const bars = (await ui.findAll({ type: 'Raster' })).map(bar => rasterText(String(bar.props.cells)))
@@ -148,7 +148,7 @@ async function framesOf($: Engine, clock: Clock, view: { agentId?: string } = {}
     plugin: PLUGIN,
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking, maxRows: 30, bodyColumns: 80, scroll: { offset: 0, bodyRows: 30 }, view },
+    props: { hasSurvey: false, isCollapsed: false, isWorking, maxRows: 30, bodyColumns: 80, scroll: { offset: 0, bodyRows: 30 }, view },
   })
   for (const key of Object.keys(blits)) delete blits[key]
   for (let i = 0; i < 14; i++) await clock.advance(70)
